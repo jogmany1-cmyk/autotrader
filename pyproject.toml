@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autotrader"
+version = "0.1.0"
+description = "AI 기반 주식 자동매매 시스템 (스크리닝 · 타이밍 신호 · 리스크 관리 · 백테스트 · 모의/실계좌 실행)"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+live = ["requests>=2.28"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+autotrader = "autotrader.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["autotrader*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
