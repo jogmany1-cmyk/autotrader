@@ -15,7 +15,9 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from .broker import PaperBroker
 from .config import Config
+from .cooldown import CooldownRegistry
 from .data.base import DataProvider
+from .market import is_trading_day
 from .metrics import PerformanceReport, performance_from
 from .models import (Bar, EquityPoint, Fill, Order, Position, ScreenResult,
                      Side, Trade)
@@ -24,6 +26,7 @@ from .screener import Screener
 from .strategy import (DayBreakout, DayMomentum, DayPullback, Ensemble,
                        MeanReversion, SwingTrend)
 from .strategy.base import Strategy, StrategyContext
+from .tracker import Prediction, PredictionTracker
 
 
 @dataclass
@@ -35,6 +38,8 @@ class BacktestReport:
     trades: List[Trade] = field(default_factory=list)
     equity_curve: List[EquityPoint] = field(default_factory=list)
     screen_snapshot: List[ScreenResult] = field(default_factory=list)
+    accuracy: Optional[object] = None      # tracker.AccuracyReport
+    skipped_days: int = 0                  # 휴장일 등으로 건너뛴 봉 수
 
 
 class Backtester:
@@ -82,12 +87,21 @@ class Backtester:
         # 2) 브로커·리스크·기록기 초기화
         broker = PaperBroker(self.config.backtest.initial_cash, self.config.costs)
         risk = RiskEngine(self.config.risk)
+        cooldown = CooldownRegistry(default_bars=self.config.risk.cooldown_bars_after_stop)
+        tracker = PredictionTracker()
         equity_points: List[EquityPoint] = []
-        pending: List[Tuple[str, float, float, str]] = []  # (symbol, stop, target, tag)
+        # (symbol, stop, target, tag, score, votes, detail)
+        pending: List[Tuple[str, float, float, str, float, int, Dict[str, float]]] = []
 
         first_seen_close: Dict[str, float] = {}
+        skipped_days = 0
 
         for day_ix, ts in enumerate(timeline):
+            # 휴장일이면 사이클 자체 스킵 (블로그 후기 개선판 ①)
+            if not is_trading_day(ts.date()):
+                skipped_days += 1
+                continue
+
             todays_bars: Dict[str, Bar] = {}
             for sym in symbols:
                 idx = _index_at(bars_by_symbol[sym], ts)
@@ -99,10 +113,14 @@ class Backtester:
             if not todays_bars:
                 continue
 
+            cooldown.purge_expired(ts.date())
+
             # 2.1 대기 주문 체결(전일 신호 → 오늘 시가)
-            for sym, stop, target, tag in pending:
+            for sym, stop, target, tag, score, votes, detail in pending:
                 bar = todays_bars.get(sym)
                 if bar is None:
+                    continue
+                if cooldown.is_blocked(sym, ts.date()):
                     continue
                 price = bar.open
                 positions = broker.positions()
@@ -111,7 +129,7 @@ class Backtester:
                 decision = risk.evaluate_entry(
                     symbol=sym, price=price, stop_price=stop,
                     equity=equity, cash=broker.cash(),
-                    positions=positions, score=1.0,
+                    positions=positions, score=score,
                 )
                 if not decision.allowed:
                     continue
@@ -120,16 +138,34 @@ class Backtester:
                         Order(sym, Side.BUY, decision.qty, tag=tag),
                         price_hint=price, ts=ts, stop=stop, target=target,
                     )
+                    # 예측 스냅샷 기록 (블로그 후기 개선판 ⑦)
+                    tracker.record_entry(Prediction(
+                        symbol=sym, entry_ts=ts, entry_price=price,
+                        confidence=score, votes=votes,
+                        target_price=target, stop_price=stop,
+                        reason=tag, factor_detail=dict(detail),
+                    ))
                 except Exception:
                     continue
             pending.clear()
 
-            # 2.2 오늘의 exit trigger (스탑/타깃/시간청산). 트레일링도 여기서.
-            closed = broker.mark(todays_bars, ts,
-                                 trail_pct=self.trail_pct,
-                                 max_hold=self.config.execution.max_holding_bars)
+            # 2.2 오늘의 청산 판정 (하드 스톱 → 스탑 → 타깃 → 시간 순).
+            #     심볼 유형별 프로파일(ETF/개별주)이 있으면 그것에 맞춰 트레일/보유·손절폭 결정.
+            #     구현 편의상 여기서는 계좌 기본값을 쓰고, per-symbol override 는
+            #     backtest 진입 단계에서 stop_hint 에 이미 반영되어 있다.
+            closed = broker.mark(
+                todays_bars, ts,
+                trail_pct=self.trail_pct,
+                max_hold=self.config.execution.max_holding_bars,
+                hard_stop_pct=self.config.risk.hard_stop_loss_pct,
+            )
             for tr in closed:
                 risk.register_exit(tr.pnl, ts.date())
+                cooldown.register_exit(tr.symbol, tr.exit_reason, ts.date())
+                tracker.record_exit(
+                    symbol=tr.symbol, exit_ts=tr.exit_ts,
+                    exit_price=tr.exit_price, exit_reason=tr.exit_reason,
+                )
 
             # 2.3 오늘 종가 확정 후, 각 종목에 대해 앙상블 판단 → 내일 시가 진입 준비
             positions_now = broker.positions()
@@ -138,6 +174,8 @@ class Backtester:
             for sym, bar in todays_bars.items():
                 if sym in positions_now:
                     continue
+                if cooldown.is_blocked(sym, ts.date()):
+                    continue
                 bars = bars_by_symbol[sym]
                 idx = _index_at(bars, ts)
                 if idx is None:
@@ -145,7 +183,10 @@ class Backtester:
                 dec = self.ensemble.evaluate(StrategyContext(sym, bars, idx))
                 if dec.signal.side is not Side.BUY:
                     continue
-                pending.append((sym, dec.stop_hint, dec.target_hint, dec.signal.reason[:40]))
+                pending.append((
+                    sym, dec.stop_hint, dec.target_hint,
+                    dec.signal.reason[:40], dec.score, dec.votes, dec.detail,
+                ))
 
             # 2.4 에쿼티 스냅샷
             prices = {s: b.close for s, b in todays_bars.items()}
@@ -177,6 +218,7 @@ class Backtester:
             train=report_train, val=report_val, oos=report_oos, all=report_all,
             trades=list(broker.portfolio.closed_trades),
             equity_curve=equity_points, screen_snapshot=screen,
+            accuracy=tracker.report(), skipped_days=skipped_days,
         )
 
 

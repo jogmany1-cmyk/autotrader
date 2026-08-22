@@ -37,3 +37,20 @@ def test_reject_when_cash_insufficient():
     b = PaperBroker(100, Costs())
     with pytest.raises(BrokerError):
         b.submit(Order("A", Side.BUY, 10), price_hint=1000)
+
+
+def test_hard_stop_triggers_before_strategy_stop():
+    from datetime import datetime
+    from autotrader.broker import PaperBroker
+    from autotrader.config import Costs
+    from autotrader.models import Bar, Order, Side
+
+    b = PaperBroker(1_000_000, Costs())
+    b.submit(Order("A", Side.BUY, 100), price_hint=1000,
+             ts=datetime(2024, 1, 2), stop=850, target=1200)
+    # 스탑(850)까지 안 갔지만 하드 스톱(-10% = 900) 아래로 갭다운 → hard_stop 발동
+    bar = Bar(datetime(2024, 1, 3), 890, 900, 870, 880, 1000)
+    closed = b.mark({"A": bar}, datetime(2024, 1, 3),
+                    hard_stop_pct=0.10, trail_pct=0.0)
+    assert len(closed) == 1
+    assert closed[0].exit_reason == "hard_stop"

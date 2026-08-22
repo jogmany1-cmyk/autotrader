@@ -57,10 +57,13 @@ class PaperBroker(Broker):
 
     # --- 매 봉 후처리 -------------------------------------------------------
     def mark(self, bars: Dict[str, "BarLike"], ts: datetime,
-             trail_pct: float = 0.0, max_hold: Optional[int] = None) -> List[Trade]:
+             trail_pct: float = 0.0, max_hold: Optional[int] = None,
+             hard_stop_pct: float = 0.0) -> List[Trade]:
         """각 종목의 당일 봉을 받아 스탑/타깃/시간 청산을 트리거.
 
-        return : 이번 mark 로 종결된 트레이드들.
+        우선순위: hard_stop → stop → target → time. hard_stop 은 개별 전략
+        스탑과 무관하게 계좌 보호를 위한 최종선(예: -10%). 갭다운으로 스탑
+        아래에서 열린 경우 시가로 체결한다.
         """
         closed: List[Trade] = []
         prices = {s: b.close for s, b in bars.items()}
@@ -73,8 +76,11 @@ class PaperBroker(Broker):
                 continue
             exit_price: Optional[float] = None
             reason = ""
-            if pos.stop_price is not None and bar.low <= pos.stop_price:
-                # 갭다운으로 스탑 아래에서 시가가 열리면 시가로 체결
+            hard_line = pos.avg_price * (1 - hard_stop_pct) if hard_stop_pct > 0 else 0.0
+            if hard_line and bar.low <= hard_line:
+                exit_price = min(hard_line, bar.open)
+                reason = "hard_stop"
+            elif pos.stop_price is not None and bar.low <= pos.stop_price:
                 exit_price = min(pos.stop_price, bar.open)
                 reason = "stop"
             elif pos.take_price is not None and bar.high >= pos.take_price:

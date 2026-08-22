@@ -17,13 +17,16 @@ from typing import Dict, List, Optional, Sequence
 from .broker.base import Broker
 from .broker.paper import PaperBroker
 from .config import Config
+from .cooldown import CooldownRegistry
 from .data.base import DataProvider
+from .market import is_trading_day, reason_closed
 from .models import Bar, Order, Side
 from .risk import RiskEngine
 from .screener import Screener
 from .strategy import (DayBreakout, DayMomentum, DayPullback, Ensemble,
                        MeanReversion, SwingTrend)
 from .strategy.base import Strategy, StrategyContext
+from .tracker import Prediction, PredictionTracker
 
 log = logging.getLogger("autotrader.live")
 
@@ -36,6 +39,8 @@ class CycleReport:
     orders_placed: int
     orders_rejected: int
     closed_trades: int
+    market_open: bool = True
+    skipped_reason: str = ""
     details: List[str] = field(default_factory=list)
 
 
@@ -58,11 +63,21 @@ class LiveTrader:
         self.trail_pct = trail_pct
         self.dry_run = dry_run
         self.risk = RiskEngine(config.risk)
+        self.cooldown = CooldownRegistry(default_bars=config.risk.cooldown_bars_after_stop)
+        self.tracker = PredictionTracker()
 
     def cycle(self, now: Optional[datetime] = None) -> CycleReport:
         now = now or datetime.utcnow()
         report = CycleReport(ts=now, candidates=0, signals=0,
                              orders_placed=0, orders_rejected=0, closed_trades=0)
+
+        # 0. 휴장일이면 사이클 자체 스킵 (블로그 후기 개선판 ①)
+        if not is_trading_day(now.date()):
+            report.market_open = False
+            report.skipped_reason = reason_closed(now)
+            return report
+
+        self.cooldown.purge_expired(now.date())
 
         # 1. Screener
         universe = self.config.universe.symbols or self.provider.universe()
@@ -70,7 +85,7 @@ class LiveTrader:
         candidates = [r for r in screen if r.passed]
         report.candidates = len(candidates)
 
-        # 2. 현재 계좌 상태
+        # 2. 현재 계좌 상태 — 브로커의 실제 잔고가 진실의 기준 (블로그 후기 개선판 ②).
         positions = self.broker.positions()
         prices: Dict[str, float] = {}
         for sym in list(positions.keys()) + [c.symbol for c in candidates]:
@@ -89,6 +104,9 @@ class LiveTrader:
         # 3. 각 후보에 대해 앙상블
         for cand in candidates:
             if cand.symbol in positions:
+                continue
+            if self.cooldown.is_blocked(cand.symbol, now.date()):
+                report.details.append(f"{cand.symbol}: cooldown")
                 continue
             bars = self.provider.history(cand.symbol, self.config.universe.lookback_days)
             if len(bars) < 60:
@@ -118,6 +136,12 @@ class LiveTrader:
                 else:
                     self.broker.submit(order, price_hint=price)
                 report.orders_placed += 1
+                self.tracker.record_entry(Prediction(
+                    symbol=cand.symbol, entry_ts=now, entry_price=price,
+                    confidence=dec.score, votes=dec.votes,
+                    target_price=dec.target_hint, stop_price=dec.stop_hint,
+                    reason=dec.signal.reason[:32], factor_detail=dict(dec.detail),
+                ))
             except Exception as exc:
                 report.orders_rejected += 1
                 report.details.append(f"{cand.symbol}: broker error {exc}")
@@ -132,8 +156,14 @@ class LiveTrader:
                     bars_today[sym] = bars[-1]
             closed = self.broker.mark(bars_today, now,
                                       trail_pct=self.trail_pct,
-                                      max_hold=self.config.execution.max_holding_bars)
+                                      max_hold=self.config.execution.max_holding_bars,
+                                      hard_stop_pct=self.config.risk.hard_stop_loss_pct)
             report.closed_trades = len(closed)
             for tr in closed:
                 self.risk.register_exit(tr.pnl, now.date())
+                self.cooldown.register_exit(tr.symbol, tr.exit_reason, now.date())
+                self.tracker.record_exit(
+                    symbol=tr.symbol, exit_ts=tr.exit_ts,
+                    exit_price=tr.exit_price, exit_reason=tr.exit_reason,
+                )
         return report

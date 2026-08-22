@@ -59,7 +59,15 @@ def cmd_backtest(args) -> int:
     _dump_report(rep.val)
     print("== OUT-OF-SAMPLE  (실제 판단 근거) ================")
     _dump_report(rep.oos)
-    print(f"trades={len(rep.trades)}  bars={len(rep.equity_curve)}")
+    print(f"trades={len(rep.trades)}  bars={len(rep.equity_curve)}  "
+          f"skipped(holiday)={rep.skipped_days}")
+    if rep.accuracy is not None and getattr(rep.accuracy, "n", 0):
+        a = rep.accuracy
+        print("== AI 예측 정확도 ================================")
+        print(f"  n={a.n}  win_rate={a.win_rate:.3f}  avg_return={a.avg_return:.4f}  "
+              f"target_hit={a.target_hit_rate:.3f}  stop_hit={a.stop_hit_rate:.3f}")
+        for k, v in a.by_confidence_bucket.items():
+            print(f"    conf {k:<6} n={v['n']:>3}  win={v['win_rate']:.3f}  ret={v['avg_return']:+.4f}")
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
             json.dump({
@@ -129,11 +137,16 @@ def cmd_paper(args) -> int:
                         trail_pct=args.trail, dry_run=args.dry_run)
     for i in range(args.cycles):
         rep = trader.cycle()
-        print(f"[{i+1}] cand={rep.candidates} sig={rep.signals} "
+        state = "closed" if not rep.market_open else "open"
+        print(f"[{i+1}] market={state} cand={rep.candidates} sig={rep.signals} "
               f"placed={rep.orders_placed} rej={rep.orders_rejected} "
               f"closed={rep.closed_trades}")
         for line in rep.details[:5]:
             print(f"    · {line}")
+    acc = trader.tracker.report()
+    if acc.n:
+        print(f"\n예측 정확도: n={acc.n} 승률={acc.win_rate:.2f} "
+              f"평균수익={acc.avg_return:+.3f} 목표달성률={acc.target_hit_rate:.2f}")
     return 0
 
 

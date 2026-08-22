@@ -28,6 +28,9 @@ class RiskLimits:
     max_gross_exposure: float = 1.00   # 총 매수금액 / 자본 상한
     max_consecutive_losses: int = 5    # 연속 손절 N회 이후 하루 쿨다운
     min_cash_pct: float = 0.10         # 항상 남겨두는 현금 비율
+    hard_stop_loss_pct: float = 0.10   # 개별 전략과 무관한 계좌 보호용 최종 손절 (-10%)
+    cooldown_bars_after_stop: int = 3  # 손절/AI매도 후 재매수 금지 기간(거래일). 익절은 예외.
+    ensemble_sell_threshold: float = 0.6   # AI SELL 신호 채택 임계값 (신뢰도)
 
 
 @dataclass
@@ -36,6 +39,32 @@ class Universe:
     min_price: float = 1_000.0        # 지나치게 저가인 종목 제외
     min_avg_dollar_vol: float = 5e8   # 하루 평균 거래대금 하한(합성값 기준)
     lookback_days: int = 250          # 전략·팩터 계산에 쓸 과거 봉 수
+
+
+@dataclass
+class SymbolProfile:
+    """ETF 와 개별주는 위험 프로파일이 크게 달라서 손절폭·트레일링·앙상블
+    임계값을 따로 잡는다. 블로그 후기 개선판 ⑥·⑧과 같은 취지."""
+    trail_pct: float = 0.05
+    max_holding_bars: int = 20
+    ensemble_threshold: float = 0.55
+    hard_stop_loss_pct: float = 0.10
+
+
+@dataclass
+class SymbolProfiles:
+    etf: SymbolProfile = field(default_factory=lambda: SymbolProfile(
+        trail_pct=0.04, max_holding_bars=40,
+        ensemble_threshold=0.50, hard_stop_loss_pct=0.07,
+    ))
+    stock: SymbolProfile = field(default_factory=lambda: SymbolProfile(
+        trail_pct=0.06, max_holding_bars=15,
+        ensemble_threshold=0.58, hard_stop_loss_pct=0.10,
+    ))
+
+    def for_kind(self, kind: str) -> SymbolProfile:
+        kind = (kind or "stock").lower()
+        return self.etf if kind == "etf" else self.stock
 
 
 @dataclass
@@ -102,6 +131,8 @@ class Config:
     execution: ExecutionCfg = field(default_factory=ExecutionCfg)
     backtest: BacktestCfg = field(default_factory=BacktestCfg)
     kis: KISConfig = field(default_factory=KISConfig)
+    profiles: SymbolProfiles = field(default_factory=SymbolProfiles)
+    symbol_kinds: Dict[str, str] = field(default_factory=dict)  # symbol → "etf"|"stock"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

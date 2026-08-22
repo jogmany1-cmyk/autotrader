@@ -108,3 +108,24 @@ autotrader/
   cli.py              `python -m autotrader …`
 tests/                pytest 스위트 (27개)
 ```
+
+
+## 8. 실운영 경험에서 반영한 개선 사양 (v0.2)
+
+블로그 후기 세 편의 **최종 상태만** 뽑아 코드에 반영했습니다. (초기 시행착오는 참고만.)
+
+| # | 개선 항목 | 구현 위치 |
+|---|-----------|-----------|
+| ① | 휴장일이면 사이클 자체 스킵 (주말·KRX 공휴일) | `market.py`, `LiveTrader.cycle`, `Backtester.run` |
+| ② | 브로커의 실제 잔고를 진실의 기준(SoT)으로 사용 (수동매매 대응) | `LiveTrader.cycle` 앞부분에서 `broker.positions()` 재조회 |
+| ③ | 익절은 쿨다운 없음, 손절/AI 매도/시간청산만 N일 쿨다운 | `cooldown.py` (`COOLDOWN_EXEMPT_REASONS`) |
+| ④ | 진입시 예측(신뢰도·목표가·손절가) 저장 → 청산시 실측과 비교, 승률/목표가 도달률/신뢰도 구간별 성과 | `tracker.py` (`PredictionTracker`) |
+| ⑤ | 개별 전략 스탑과 별개로 계좌 보호용 하드 손절(-10%) | `PaperBroker.mark(hard_stop_pct=)`, `RiskLimits.hard_stop_loss_pct` |
+| ⑥ | ETF vs 개별주 프로파일 분기 (임계값·트레일링·손절폭 상이) | `SymbolProfiles`, `Config.symbol_kinds` |
+| ⑦ | 앙상블 SELL 임계값 별도 설정 | `RiskLimits.ensemble_sell_threshold` |
+| ⑧ | 일 3사이클 스케줄 (09:30/13:00/15:00) — 외부 스케줄러가 호출, 사이클 자체는 시장시간 판정 | `market.is_market_open` |
+
+**정직하게 짚고 넘어가는 것**
+
+- 원문 블로그의 성적(투자금 10만원, 2주간 -2,427원 후 반등)은 표본이 극도로 작고 시장 상승기에 뽑힌 스냅샷입니다. 우리 코드가 그 성적을 재현한다는 뜻이 전혀 아닙니다.
+- "GPT-5.5" 같은 특정 LLM 모델을 프롬프트로 신호 생성하는 부분은 **이번 v0.2 에서 코어에 넣지 않았습니다**. 이유: (a) 결정론적으로 재현 가능한 백테스트가 어렵고, (b) API 비용이 하루 3사이클 기준으로 월 2~3만원 이상이 되며, (c) Risk Engine 이 있는 한 굳이 실행 라인에 LLM 을 두지 않아도 뉴스·공시 스코어를 앙상블 앞단에 붙일 자리는 이미 있음. 붙이려면 `Ensemble` 앞에 `LLMFactor` 를 하나 추가하고 `weights.llm_news` 를 두는 게 최소 침습적입니다.
