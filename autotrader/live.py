@@ -159,6 +159,7 @@ class LiveTrader:
                 else:
                     self.broker.submit(order, price_hint=price)
                 report.orders_placed += 1
+                self.risk.register_entry()
                 self.tracker.record_entry(Prediction(
                     symbol=cand.symbol, entry_ts=now, entry_price=price,
                     confidence=dec.score, votes=dec.votes,
@@ -233,6 +234,7 @@ class LiveTrader:
                     else:
                         self.broker.submit(order, price_hint=price)
                     report.orders_placed += 1
+                    self.risk.register_entry()
                     self.tracker.record_entry(Prediction(
                         symbol=ev.symbol, entry_ts=now, entry_price=price,
                         confidence=dec.score, votes=dec.votes,

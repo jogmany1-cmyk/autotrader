@@ -31,6 +31,13 @@ class RiskLimits:
     hard_stop_loss_pct: float = 0.10   # 개별 전략과 무관한 계좌 보호용 최종 손절 (-10%)
     cooldown_bars_after_stop: int = 3  # 손절/AI매도 후 재매수 금지 기간(거래일). 익절은 예외.
     ensemble_sell_threshold: float = 0.6   # AI SELL 신호 채택 임계값 (신뢰도)
+    # 회전율 폭주 방지 (v0.7): 자동매매 실패 사례의 가장 큰 킬러는 수수료·세금.
+    # 하루 신규 진입 상한을 두어 "5초 만에 -2% 손절 → 재진입 → 반복" 폭주를 원천 차단.
+    max_trades_per_day: int = 8
+    # 최고점 매수 방지 (v0.7): 직전 봉이 이 값 이상 급등한 종목은 진입 금지.
+    # "포착 즉시 시장가 매수 → 곧바로 하락 → 로스컷" 사고를 사전에 차단.
+    # 0 = 필터 비활성.
+    chase_filter_pct: float = 0.05
 
 
 @dataclass

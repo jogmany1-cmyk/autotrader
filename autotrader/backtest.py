@@ -18,7 +18,7 @@ from .config import Config
 from .cooldown import CooldownRegistry
 from .data.base import DataProvider
 from .market import is_trading_day
-from .metrics import PerformanceReport, performance_from
+from .metrics import CostAudit, PerformanceReport, build_cost_audit, performance_from
 from .models import (Bar, EquityPoint, Fill, Order, Position, ScreenResult,
                      Side, Trade)
 from .risk import RiskEngine
@@ -40,6 +40,7 @@ class BacktestReport:
     screen_snapshot: List[ScreenResult] = field(default_factory=list)
     accuracy: Optional[object] = None      # tracker.AccuracyReport
     skipped_days: int = 0                  # 휴장일 등으로 건너뛴 봉 수
+    cost_audit: Optional[CostAudit] = None
 
 
 class Backtester:
@@ -126,10 +127,19 @@ class Backtester:
                 positions = broker.positions()
                 equity = broker.equity({s: b.close for s, b in todays_bars.items()})
                 risk.new_day(ts.date(), equity)
+                # 직전 봉 수익률 — chase filter 용
+                sym_bars = bars_by_symbol[sym]
+                sym_idx = _index_at(sym_bars, ts)
+                last_ret = None
+                if sym_idx is not None and sym_idx >= 1:
+                    prev_close = sym_bars[sym_idx - 1].close
+                    if prev_close > 0:
+                        last_ret = price / prev_close - 1.0
                 decision = risk.evaluate_entry(
                     symbol=sym, price=price, stop_price=stop,
                     equity=equity, cash=broker.cash(),
                     positions=positions, score=score,
+                    last_bar_return=last_ret,
                 )
                 if not decision.allowed:
                     continue
@@ -138,7 +148,7 @@ class Backtester:
                         Order(sym, Side.BUY, decision.qty, tag=tag),
                         price_hint=price, ts=ts, stop=stop, target=target,
                     )
-                    # 예측 스냅샷 기록 (블로그 후기 개선판 ⑦)
+                    risk.register_entry()
                     tracker.record_entry(Prediction(
                         symbol=sym, entry_ts=ts, entry_price=price,
                         confidence=score, votes=votes,
@@ -214,11 +224,13 @@ class Backtester:
 
         screen = Screener(self.provider, self.config.universe).rank(symbols)
 
+        cost = build_cost_audit(broker.fills, self.config.backtest.initial_cash)
         return BacktestReport(
             train=report_train, val=report_val, oos=report_oos, all=report_all,
             trades=list(broker.portfolio.closed_trades),
             equity_curve=equity_points, screen_snapshot=screen,
             accuracy=tracker.report(), skipped_days=skipped_days,
+            cost_audit=cost,
         )
 
 

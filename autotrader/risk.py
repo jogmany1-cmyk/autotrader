@@ -29,6 +29,7 @@ class RiskState:
     day: Optional[date] = None
     day_start_equity: float = 0.0
     day_realized_pnl: float = 0.0
+    day_new_entries: int = 0
     consecutive_losses: int = 0
     cooldown_until: Optional[date] = None
 
@@ -37,6 +38,7 @@ class RiskState:
             self.day = today
             self.day_start_equity = equity
             self.day_realized_pnl = 0.0
+            self.day_new_entries = 0
 
     def register_trade_pnl(self, pnl: float) -> None:
         self.day_realized_pnl += pnl
@@ -60,7 +62,8 @@ class RiskEngine:
 
     def evaluate_entry(self, *, symbol: str, price: float, stop_price: Optional[float],
                        equity: float, cash: float,
-                       positions: Dict[str, Position], score: float = 1.0) -> RiskDecision:
+                       positions: Dict[str, Position], score: float = 1.0,
+                       last_bar_return: Optional[float] = None) -> RiskDecision:
         L = self.limits
         if price <= 0:
             return RiskDecision(False, 0, "price<=0")
@@ -72,11 +75,18 @@ class RiskEngine:
             return RiskDecision(False, 0, "cooldown")
         if len(positions) >= L.max_positions:
             return RiskDecision(False, 0, "max-positions")
+        # 일일 거래 상한 (v0.7): 회전율 폭주 방지 그물.
+        if self.state.day_new_entries >= L.max_trades_per_day:
+            return RiskDecision(False, 0, "max-trades-per-day")
         loss_frac = -self.state.day_realized_pnl / self.state.day_start_equity if self.state.day_start_equity else 0.0
         if loss_frac >= L.daily_loss_stop_pct:
             return RiskDecision(False, 0, "daily-loss-stop")
         if self.state.consecutive_losses >= L.max_consecutive_losses:
             return RiskDecision(False, 0, "consec-losses")
+        # 최고점 매수 방지 (v0.7): 직전 봉 급등 종목은 차단.
+        if (L.chase_filter_pct > 0 and last_bar_return is not None
+                and last_bar_return >= L.chase_filter_pct):
+            return RiskDecision(False, 0, f"chase-filter {last_bar_return*100:.1f}%")
 
         gross_now = sum(p.qty * price for p in positions.values())  # 러프 estimate
         if gross_now / equity > L.max_gross_exposure:
@@ -102,6 +112,10 @@ class RiskEngine:
             return RiskDecision(False, 0, f"qty=0 (r{qty_by_risk} p{qty_by_position} c{qty_by_cash})",
                                 risk_per_share=risk_per_share)
         return RiskDecision(True, qty, "ok", risk_per_share)
+
+    def register_entry(self) -> None:
+        """실제 주문 접수 성공 시 호출. 일일 거래 카운터 증가."""
+        self.state.day_new_entries += 1
 
     def register_exit(self, pnl: float, today: date) -> None:
         self.state.register_trade_pnl(pnl)

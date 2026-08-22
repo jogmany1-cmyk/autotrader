@@ -62,6 +62,14 @@ def cmd_backtest(args) -> int:
     _dump_report(rep.oos)
     print(f"trades={len(rep.trades)}  bars={len(rep.equity_curve)}  "
           f"skipped(holiday)={rep.skipped_days}")
+    if rep.cost_audit is not None and rep.cost_audit.n_fills:
+        print("== 비용 감사 (실패 사례에서 배운 항목) =================")
+        c = rep.cost_audit
+        print(f"  {c.as_line()}")
+        print(f"  총 매매대금 {c.total_gross_volume:>16,.0f}")
+        print(f"  총 수수료   {c.total_fees:>16,.2f}")
+        print(f"  총 거래세   {c.total_taxes:>16,.2f}")
+        print(f"  평균 체결   {c.avg_trade_size:>16,.0f}")
     if rep.accuracy is not None and getattr(rep.accuracy, "n", 0):
         a = rep.accuracy
         print("== AI 예측 정확도 ================================")

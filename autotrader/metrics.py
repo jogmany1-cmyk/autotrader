@@ -16,7 +16,53 @@ from dataclasses import dataclass, asdict
 from typing import Dict, List, Sequence
 
 from .indicators import drawdown_series
-from .models import EquityPoint, Trade
+from .models import EquityPoint, Fill, Trade
+
+
+@dataclass
+class CostAudit:
+    """자동매매 실패 사례에서 가장 큰 킬러 — 회전율과 총 비용.
+
+    "1,000만원인데 하루 4,000만원 회전" 같은 상황을 숫자로 보이게.
+    """
+    total_gross_volume: float          # 총 매매대금 (매수+매도 절댓값 합)
+    total_fees: float                  # 총 수수료
+    total_taxes: float                 # 총 거래세 (매도)
+    total_slippage_est: float          # 슬리피지 추정치 (백테스트에서만)
+    cost_to_capital_ratio: float       # (fees+taxes) / initial_capital
+    turnover_ratio: float              # total_gross_volume / initial_capital
+    avg_trade_size: float
+    n_fills: int
+
+    def to_dict(self) -> Dict[str, float]:
+        return asdict(self)
+
+    def as_line(self) -> str:
+        return (f"[COST] fills={self.n_fills} turnover×{self.turnover_ratio:.2f} "
+                f"fees+tax={self.total_fees+self.total_taxes:,.0f} "
+                f"(cost/capital={self.cost_to_capital_ratio*100:.2f}%)")
+
+
+def build_cost_audit(fills: Sequence[Fill], initial_capital: float) -> CostAudit:
+    """체결 리스트에서 비용 감사 리포트 생성."""
+    n = len(fills)
+    if n == 0 or initial_capital <= 0:
+        return CostAudit(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0)
+    gross = sum(f.gross for f in fills)
+    fees = sum(f.fee for f in fills)
+    taxes = sum(f.tax for f in fills)
+    # 슬리피지 명세는 저장되지 않으므로 gross * slippage_bp 근사 대신 0 유지.
+    slip = 0.0
+    return CostAudit(
+        total_gross_volume=round(gross, 2),
+        total_fees=round(fees, 2),
+        total_taxes=round(taxes, 2),
+        total_slippage_est=slip,
+        cost_to_capital_ratio=round((fees + taxes) / initial_capital, 6),
+        turnover_ratio=round(gross / initial_capital, 3),
+        avg_trade_size=round(gross / n, 2),
+        n_fills=n,
+    )
 
 
 @dataclass
