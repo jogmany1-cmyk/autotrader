@@ -19,7 +19,7 @@ from .broker.paper import PaperBroker
 from .config import Config
 from .cooldown import CooldownRegistry
 from .data.base import DataProvider
-from .market import is_trading_day, reason_closed
+from .market import is_trading_day, is_extended_market_open, reason_closed, session_of
 from .models import Bar, Order, Side
 from .risk import RiskEngine
 from .screener import Screener
@@ -65,16 +65,22 @@ class LiveTrader:
         self.risk = RiskEngine(config.risk)
         self.cooldown = CooldownRegistry(default_bars=config.risk.cooldown_bars_after_stop)
         self.tracker = PredictionTracker()
+        # NXT 확장 세션 참여 여부. 두 값을 모두 False 로 두면 기존 KRX 정규장만 사용.
+        self.allow_pre_market = False
+        self.allow_after_market = False
 
     def cycle(self, now: Optional[datetime] = None) -> CycleReport:
         now = now or datetime.utcnow()
         report = CycleReport(ts=now, candidates=0, signals=0,
                              orders_placed=0, orders_rejected=0, closed_trades=0)
 
-        # 0. 휴장일이면 사이클 자체 스킵 (블로그 후기 개선판 ①)
-        if not is_trading_day(now.date()):
+        # 0. 시장 세션 판정 — 휴장일이거나 프리·정규·애프터 어디에도 속하지 않으면 스킵.
+        #    NXT 프리/애프터 참여 여부는 allow_pre_market / allow_after_market 로 조절.
+        if not is_extended_market_open(now,
+                                       include_pre=self.allow_pre_market,
+                                       include_after=self.allow_after_market):
             report.market_open = False
-            report.skipped_reason = reason_closed(now)
+            report.skipped_reason = f"session={session_of(now)}"
             return report
 
         self.cooldown.purge_expired(now.date())
