@@ -155,3 +155,44 @@ tests/                pytest 스위트 (27개)
   --registry r.json` 로 통과 여부 확인.
 - **`--validated-only`**: `paper` 실행 시 레지스트리에서 통과한 전략만 앙상블에
   들어감. "검증되지 않은 규칙은 실행되지 않는다" 원칙의 코드 게이트.
+
+
+## 10. 실시간 조건검색 스트림 (v0.5)
+
+키움 조건검색 실시간 튜토리얼(WebSocket) 참고. **폴링과 별개로** 실시간
+이벤트를 소비해 즉시 앙상블·리스크 게이트로 전달하는 계층 추가.
+
+### 신설 모듈
+- **`streaming.base.StreamClient`** — 벤더 무관 추상. 백그라운드 스레드에서
+  이벤트를 큐로 emit, `events()` / `drain()` 두 소비 API 제공.
+- **`streaming.local.LocalStream`** — 사전 등록 + 런타임 `push()` 를 지원하는
+  로컬 목(mock). 테스트·데모 전용.
+- **`streaming.kiwoom_ws.KiwoomConditionStream`** — 키움 WebSocket 스켈레톤:
+  `wss://mockapi.kiwoom.com:10000/...` (모의) / `wss://api.kiwoom.com:10000/...`
+  (실), `access_token` 2차 로그인, `TRNM=PING` 자동 반사, `TRNM=REAL` 이벤트에서
+  9001 필드를 종목 코드로 파싱. `websockets` 는 옵션 의존성 (없어도 임포트 성공,
+  실행 시점에만 실패).
+
+### LiveTrader 통합
+`trader.stream` 에 `StreamClient` 를 붙이면 매 사이클 끝에서 큐에 쌓인 이벤트를
+`drain()` 하여 **신호가 뜬 종목을 즉시 앙상블에 넣고, Risk Engine 통과 시 주문
+발주**. 폴링 로직은 그대로 유지되므로 스트림 없이도 동작한다.
+
+```python
+from autotrader.streaming import KiwoomConditionStream
+trader.stream = KiwoomConditionStream(
+    access_token=token, condition_seq="0", is_paper=True,
+)
+trader.stream.start()
+try:
+    while True:
+        rep = trader.cycle()
+        print(rep.stream_events, "실시간 이벤트 처리")
+finally:
+    trader.stream.stop()
+```
+
+- **주의**: 실 접속은 이 저장소에서 테스트하지 않는다. 벤더 최신 문서(TR ID·
+  필드 이름·URL 변경 여부)를 실전 배포 전에 반드시 확인.
+- **REST vs 스트림**: REST 는 우편, 스트림은 전화. 조건검색 실시간처럼 서버가
+  push 하는 이벤트는 스트림으로만 놓치지 않는다.

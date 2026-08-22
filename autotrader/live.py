@@ -27,6 +27,7 @@ from .strategy import (DayBreakout, DayMomentum, DayPullback, Ensemble,
                        MeanReversion, SwingTrend)
 from .strategy.base import Strategy, StrategyContext
 from .registry import StrategyRegistry
+from .streaming.base import StreamClient, StreamEvent
 from .tracker import Prediction, PredictionTracker
 
 log = logging.getLogger("autotrader.live")
@@ -42,6 +43,7 @@ class CycleReport:
     closed_trades: int
     market_open: bool = True
     skipped_reason: str = ""
+    stream_events: int = 0
     details: List[str] = field(default_factory=list)
 
 
@@ -81,6 +83,8 @@ class LiveTrader:
         # NXT 확장 세션 참여 여부. 두 값을 모두 False 로 두면 기존 KRX 정규장만 사용.
         self.allow_pre_market = False
         self.allow_after_market = False
+        # 실시간 조건검색·체결 스트림. 없으면 폴링만 사용.
+        self.stream: Optional[StreamClient] = None
 
     def cycle(self, now: Optional[datetime] = None) -> CycleReport:
         now = now or datetime.utcnow()
@@ -185,4 +189,57 @@ class LiveTrader:
                     symbol=tr.symbol, exit_ts=tr.exit_ts,
                     exit_price=tr.exit_price, exit_reason=tr.exit_reason,
                 )
+
+        # 5. 실시간 스트림에서 방금 들어온 이벤트 소진.
+        #    스트림이 붙어 있으면 조건검색 히트 종목을 즉시 앙상블 후보로 승격.
+        if self.stream is not None:
+            events = self.stream.drain()
+            report.stream_events = len(events)
+            for ev in events:
+                if ev.kind != "signal" or not ev.symbol:
+                    continue
+                if ev.symbol in positions or self.cooldown.is_blocked(ev.symbol, now.date()):
+                    continue
+                try:
+                    bars = self.provider.history(ev.symbol, self.config.universe.lookback_days)
+                except Exception:
+                    continue
+                if len(bars) < 60:
+                    continue
+                dec = self.ensemble.evaluate(StrategyContext(ev.symbol, bars, len(bars) - 1))
+                if dec.signal.side is not Side.BUY:
+                    continue
+                price = bars[-1].close
+                decision = self.risk.evaluate_entry(
+                    symbol=ev.symbol, price=price, stop_price=dec.stop_hint,
+                    equity=equity, cash=self.broker.cash(),
+                    positions=positions, score=dec.score,
+                )
+                if not decision.allowed:
+                    report.orders_rejected += 1
+                    report.details.append(f"[stream] {ev.symbol}: {decision.reason}")
+                    continue
+                report.details.append(
+                    f"[stream] {ev.symbol}: BUY x{decision.qty} @ {price:.2f}"
+                )
+                if self.dry_run:
+                    continue
+                try:
+                    order = Order(ev.symbol, Side.BUY, decision.qty,
+                                  tag=f"stream:{dec.signal.reason[:24]}")
+                    if isinstance(self.broker, PaperBroker):
+                        self.broker.submit(order, price_hint=price, ts=now,
+                                           stop=dec.stop_hint, target=dec.target_hint)
+                    else:
+                        self.broker.submit(order, price_hint=price)
+                    report.orders_placed += 1
+                    self.tracker.record_entry(Prediction(
+                        symbol=ev.symbol, entry_ts=now, entry_price=price,
+                        confidence=dec.score, votes=dec.votes,
+                        target_price=dec.target_hint, stop_price=dec.stop_hint,
+                        reason="stream", factor_detail=dict(dec.detail),
+                    ))
+                except Exception as exc:
+                    report.orders_rejected += 1
+                    report.details.append(f"[stream] {ev.symbol}: broker error {exc}")
         return report
