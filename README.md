@@ -303,3 +303,57 @@ python -m autotrader schedule --prefix "python -m autotrader run-job "
   원칙과 정합성 없어 반영 X.
 
 pytest 75 → 89 통과.
+
+
+## 14. 키움 REST 시세 자동 수집 (v0.9)
+
+**"실제 시세를 사람이 CSV 로 매번 내려받는 워크플로"를 없앰.** 키움 REST API 를
+DataProvider 로 감싸서, 코드 하나가 종목 목록·일봉·연속조회·CSV 캐시 누적까지
+자동으로 처리한다. v0.8 의 Cron 잡 `collect-daily` 가 이 명령을 호출하도록
+설계돼 있어, 매일 장 마감 후 자동 최신화까지 완성된다.
+
+### 신설 · `autotrader/data/kiwoom.py` — `KiwoomProvider`
+- `history(symbol, limit)` → **캐시 우선, 부족분만 API 호출, CSV 로 즉시 누적**
+- `universe()` → 코스피(0) + 코스닥(10) 종목 마스터 자동 병합
+- `refresh_all(symbols, limit)` → 유니버스 전체 최신화 (성공/실패 카운트 리턴)
+- 연속조회 지원 (`cont-yn` / `next-key` 헤더 페이지네이션, 최대 30 페이지 안전 상한)
+- 자격증명 비면 즉시 명확한 예외 (`DataError`) — 다른 어댑터와 동일 패턴
+- CSV 캐시 포맷은 `CsvProvider` 와 완전 호환 → 오프라인 백테스트로 스위칭 가능
+
+### CLI 신규 — `autotrader fetch`
+```bash
+# 특정 종목만 수집 (모의 서버 기본)
+KIWOOM_APP_KEY=xxx KIWOOM_APP_SECRET=yyy \
+  python -m autotrader fetch --cache ./data/kiwoom --symbol 005930 --symbol 000660
+
+# 전체 유니버스 최신화 (실전 서버)
+KIWOOM_APP_KEY=xxx KIWOOM_APP_SECRET=yyy \
+  python -m autotrader fetch --cache ./data/kiwoom --real --limit 1000
+
+# v0.8 의 collect-daily 크론잡과 결합
+0 16 * * 0-4 python -m autotrader fetch --cache /var/data/kiwoom
+```
+
+### 데이터 품질 함정 (README 로도 명시)
+1. **생존자 편향** — 현재 상장 종목만 조회하면 폐지된 과거 종목 누락.
+   장기 백테스트는 KRX 과거 종목 유니버스로 보완 필요.
+2. **분봉 제공 기간 제한** — 벤더 정책상 최근 N일치만. 매일 저장해 자체 시계열
+   DB 를 축적하는 것이 정석.
+3. **수정주가·액면분할·거래정지·신규상장** 처리 정책은 실 계정에서 검증 필수.
+4. **연속조회 안 쓰면 최근 N건만 받고 끝남** → `KiwoomProvider` 는 자동 처리.
+
+### 이제 완성되는 데이터 파이프라인
+```
+매일 16:00 (크론)
+  → autotrader fetch (KiwoomProvider.refresh_all)
+    → data/kiwoom/*.csv 자동 누적
+  → autotrader backtest --csv data/kiwoom
+    → OOS 성적 확인 → StrategyRegistry 승인 여부 결정
+평일 09:30
+  → autotrader paper --csv data/kiwoom --validated-only
+    → 승인된 전략만 실전(모의) 진입
+15:00
+  → EOD 자동 청산
+```
+
+pytest 89 → 96 통과.

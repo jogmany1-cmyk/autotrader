@@ -169,6 +169,29 @@ def cmd_paper(args) -> int:
     return 0
 
 
+def cmd_fetch(args) -> int:
+    """키움 REST API 로 종목 시세를 캐시 폴더에 자동 수집.
+    자격증명은 환경변수(KIWOOM_APP_KEY / KIWOOM_APP_SECRET / KIWOOM_MODE)로."""
+    from .config import KiwoomConfig
+    from .data import KiwoomProvider
+    from .data.base import DataError
+
+    cfg = KiwoomConfig.from_env()
+    if args.real:
+        cfg.is_paper = False
+    try:
+        provider = KiwoomProvider(cfg, cache_dir=args.cache)
+    except DataError as exc:
+        print(f"[ERROR] {exc}")
+        return 2
+
+    symbols = args.symbol or provider.universe()
+    print(f"[FETCH] {len(symbols)}개 심볼 → 캐시 {args.cache} (mode={'real' if args.real else 'paper'})")
+    ok, fail = provider.refresh_all(symbols, limit=args.limit)
+    print(f"[DONE ] ok={ok} fail={fail}")
+    return 0 if fail == 0 else 1
+
+
 def cmd_validate(args) -> int:
     reg = StrategyRegistry(args.registry)
     th = reg.thresholds
@@ -283,6 +306,17 @@ def main(argv: Optional[list] = None) -> int:
     p_sch.add_argument("--prefix", default="python -m autotrader run-job ",
                        help="crontab 명령 프리픽스")
     p_sch.set_defaults(func=cmd_schedule)
+
+    p_ft = sub.add_parser("fetch", help="키움 REST API 로 시세 자동 수집 (KiwoomProvider)")
+    p_ft.add_argument("--cache", default="./data/kiwoom",
+                      help="CSV 캐시 디렉터리")
+    p_ft.add_argument("--symbol", action="append",
+                      help="종목코드 (반복 지정 가능). 미지정 시 종목 마스터 전체")
+    p_ft.add_argument("--limit", type=int, default=500,
+                      help="종목당 최소 확보할 봉 수")
+    p_ft.add_argument("--real", action="store_true",
+                      help="실전 서버 사용 (기본은 모의)")
+    p_ft.set_defaults(func=cmd_fetch)
 
     args = parser.parse_args(argv)
     return args.func(args)
