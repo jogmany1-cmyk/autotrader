@@ -154,6 +154,93 @@ class KiwoomProvider(DataProvider):
         bars = self.history(symbol, limit=2)
         return bars[-1].close
 
+    def history_minutes(self, symbol: str, interval: int = 5,
+                        limit: int = 500) -> List[Bar]:
+        """분봉 수집 (ka10080). interval ∈ {1,3,5,10,15,30,45,60}.
+        단타 전략에 필수 — 벤더가 최근 N일치만 제공하는 것이 일반적이라,
+        Cron 잡 collect-5m 으로 매 5분마다 이어받아 자체 시계열 DB 를 축적하는
+        것을 권장. 캐시 파일명은 `{symbol}_{interval}m.csv`."""
+        if interval not in (1, 3, 5, 10, 15, 30, 45, 60):
+            raise DataError(f"지원되지 않는 분봉 간격: {interval}")
+        cached = self._load_minute_cache(symbol, interval)
+        fresh = self._fetch_minutes(symbol, interval)
+        merged = _merge_bars(cached, fresh)
+        if fresh:
+            self._save_minute_cache(symbol, interval, merged)
+        if not merged:
+            raise DataError(f"{symbol}: {interval}분봉 없음")
+        return merged[-limit:] if limit else merged
+
+    def _fetch_minutes(self, symbol: str, interval: int) -> List[Bar]:
+        out: List[Bar] = []
+        cont_yn, next_key = "N", ""
+        for _ in range(10):  # 분봉은 페이지가 많을 수 있어 상한 낮게
+            r = self._http().post(
+                f"{self.base}/api/dostk/chart",
+                headers=self._headers("ka10080", cont_yn=cont_yn, next_key=next_key),
+                data=json.dumps({
+                    "stk_cd": symbol,
+                    "tic_scope": str(interval),
+                    "upd_stkpc_tp": "1",
+                }),
+                timeout=15,
+            )
+            if r.status_code != 200:
+                raise DataError(f"Kiwoom 분봉 실패({symbol}, {interval}m): {r.status_code}")
+            js = r.json()
+            for row in js.get("stk_min_pole_chart_qry", []) or js.get("list", []):
+                try:
+                    ts = datetime.strptime(str(row.get("cntr_tm")), "%Y%m%d%H%M%S")
+                    out.append(Bar(
+                        ts=ts,
+                        open=float(row.get("open_pric", 0)),
+                        high=float(row.get("high_pric", 0)),
+                        low=float(row.get("low_pric", 0)),
+                        close=float(row.get("cur_prc", 0)),
+                        volume=float(row.get("trde_qty", 0)),
+                    ))
+                except (ValueError, TypeError):
+                    continue
+            cont_yn = r.headers.get("cont-yn", "N")
+            next_key = r.headers.get("next-key", "")
+            if cont_yn != "Y" or not next_key:
+                break
+        out.sort(key=lambda b: b.ts)
+        return out
+
+    def _minute_cache_path(self, symbol: str, interval: int) -> str:
+        return os.path.join(self.cache_dir, f"{symbol}_{interval}m.csv")
+
+    def _load_minute_cache(self, symbol: str, interval: int) -> List[Bar]:
+        path = self._minute_cache_path(symbol, interval)
+        if not os.path.exists(path):
+            return []
+        bars: List[Bar] = []
+        with open(path, "r", encoding="utf-8", newline="") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                try:
+                    bars.append(Bar(
+                        ts=datetime.fromisoformat(row["date"]),
+                        open=float(row["open"]), high=float(row["high"]),
+                        low=float(row["low"]), close=float(row["close"]),
+                        volume=float(row.get("volume", 0) or 0),
+                    ))
+                except (ValueError, KeyError):
+                    continue
+        bars.sort(key=lambda b: b.ts)
+        return bars
+
+    def _save_minute_cache(self, symbol: str, interval: int,
+                           bars: Sequence[Bar]) -> None:
+        path = self._minute_cache_path(symbol, interval)
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["date", "open", "high", "low", "close", "volume"])
+            for b in bars:
+                writer.writerow([b.ts.isoformat(sep=" "),
+                                 b.open, b.high, b.low, b.close, b.volume])
+
     def _fetch_daily(self, symbol: str, since=None) -> List[Bar]:
         out: List[Bar] = []
         cont_yn, next_key = "N", ""
@@ -231,6 +318,19 @@ class KiwoomProvider(DataProvider):
                                  b.open, b.high, b.low, b.close, b.volume])
 
     # ----------------------------------- 데이터 컬렉터 (매일 자동 수집)
+    def refresh_minutes(self, symbols: Optional[Sequence[str]] = None,
+                        interval: int = 5, limit: int = 500) -> Tuple[int, int]:
+        """분봉 최신화. Cron 잡 collect-5m 에서 매 5분마다 호출."""
+        symbols = list(symbols) if symbols else self.universe()
+        ok = fail = 0
+        for sym in symbols:
+            try:
+                self.history_minutes(sym, interval=interval, limit=limit)
+                ok += 1
+            except DataError:
+                fail += 1
+        return ok, fail
+
     def refresh_all(self, symbols: Optional[Sequence[str]] = None,
                     limit: int = 500) -> Tuple[int, int]:
         """유니버스(또는 지정 심볼)의 시세를 최신화. (성공, 실패) 개수 리턴.

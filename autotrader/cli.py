@@ -186,10 +186,28 @@ def cmd_fetch(args) -> int:
         return 2
 
     symbols = args.symbol or provider.universe()
-    print(f"[FETCH] {len(symbols)}개 심볼 → 캐시 {args.cache} (mode={'real' if args.real else 'paper'})")
-    ok, fail = provider.refresh_all(symbols, limit=args.limit)
+    kind = f"{args.minutes}m" if args.minutes else "daily"
+    print(f"[FETCH] {len(symbols)}개 심볼 · {kind} → 캐시 {args.cache} "
+          f"(mode={'real' if args.real else 'paper'})")
+    if args.minutes:
+        ok, fail = provider.refresh_minutes(symbols, interval=args.minutes, limit=args.limit)
+    else:
+        ok, fail = provider.refresh_all(symbols, limit=args.limit)
     print(f"[DONE ] ok={ok} fail={fail}")
     return 0 if fail == 0 else 1
+
+
+def cmd_run_job(args) -> int:
+    """v0.8 스케줄러가 crontab 에서 호출할 표준 잡 실행."""
+    from .jobs import JobContext, run
+    ctx = JobContext(cache_dir=args.cache, registry_path=args.registry)
+    try:
+        msg = run(args.name, ctx)
+    except KeyError as exc:
+        print(f"[ERROR] {exc}")
+        return 2
+    print(msg)
+    return 0
 
 
 def cmd_validate(args) -> int:
@@ -314,9 +332,21 @@ def main(argv: Optional[list] = None) -> int:
                       help="종목코드 (반복 지정 가능). 미지정 시 종목 마스터 전체")
     p_ft.add_argument("--limit", type=int, default=500,
                       help="종목당 최소 확보할 봉 수")
+    p_ft.add_argument("--minutes", type=int, default=0,
+                      help="분봉 간격(1/3/5/10/15/30/45/60). 0 이면 일봉 수집.")
     p_ft.add_argument("--real", action="store_true",
                       help="실전 서버 사용 (기본은 모의)")
     p_ft.set_defaults(func=cmd_fetch)
+
+    p_rj = sub.add_parser("run-job", help="스케줄러가 크론에서 호출하는 표준 잡 실행")
+    p_rj.add_argument("name", choices=["morning-entry", "eod-flat",
+                                        "collect-daily", "collect-5m",
+                                        "post-analysis"],
+                      help="실행할 잡 이름")
+    p_rj.add_argument("--cache", default="./data/kiwoom",
+                      help="데이터 캐시 디렉터리")
+    p_rj.add_argument("--registry", help="StrategyRegistry JSON 경로")
+    p_rj.set_defaults(func=cmd_run_job)
 
     args = parser.parse_args(argv)
     return args.func(args)

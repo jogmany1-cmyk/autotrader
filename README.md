@@ -357,3 +357,78 @@ KIWOOM_APP_KEY=xxx KIWOOM_APP_SECRET=yyy \
 ```
 
 pytest 89 → 96 통과.
+
+
+## 15. v1.0 · 실전 배포 준비 완료
+
+세 가지를 마무리해 파이프라인이 끝에서 끝까지 실제로 돌아가게 만듦.
+
+### ① 분봉 수집 · `KiwoomProvider.history_minutes(symbol, interval, limit)`
+- 지원 간격: 1 / 3 / 5 / 10 / 15 / 30 / 45 / 60 분 (`ka10080`)
+- 캐시 파일: `{symbol}_{interval}m.csv` — 일봉 캐시와 분리
+- `refresh_minutes()` 로 유니버스 전체 최신화
+- CLI: `autotrader fetch --minutes 5`
+
+### ② 생존자 편향 방어 · `KrxUniverse` (autotrader/data/krx_universe.py)
+- 과거 시점의 KRX 상장 종목 스냅샷을 JSONL 로 저장
+- `symbols_on(date, market)` — 그 시점의 상장 종목
+- `union_between(start, end, market)` — **폐지된 종목 포함 합집합** ← 핵심
+- `refresh_from_pykrx(dates)` — pykrx 옵션 의존성으로 자동 수집
+
+### ③ 실전 잡 디스패처 · `autotrader/jobs.py` + `run-job` CLI
+v0.8 스케줄러의 crontab 라인이 실제로 뭘 하는지 마침내 구현.
+
+| 잡 이름 | 언제 | 하는 일 |
+|---------|------|---------|
+| `morning-entry` | 09:30 | LiveTrader.cycle() 한 번 실행 (스크리너→앙상블→Risk→주문) |
+| `eod-flat` | 15:00 | 보유 전량 일괄 청산 (밤 리스크 회피) |
+| `collect-daily` | 15:45 | KiwoomProvider.refresh_all() — 일봉 최신화 |
+| `collect-5m` | 장중 5분마다 | KiwoomProvider.refresh_minutes() — 분봉 최신화 |
+| `post-analysis` | 15:30 | 오늘 승인 전략 · 정확도 리포트 |
+
+**자격증명 없어도 안전**: 키움 자격증명이 없으면 자동으로 CsvProvider 로 폴백,
+분봉 수집처럼 키움만 할 수 있는 잡은 "스킵" 알림만 남기고 종료.
+
+### 이제 완성된 crontab 워크플로
+```bash
+# 1. 표준 잡 5개를 crontab 라인으로 출력
+python -m autotrader schedule --prefix "python -m autotrader run-job "
+
+# 2. 편집기 열어서 그대로 붙여넣기 (Linux/Mac)
+crontab -e
+
+# 3. 등록된 잡 확인
+crontab -l
+
+# 완료. 이제 컴퓨터가 켜져 있는 한 자동으로:
+#   평일 09:30 → morning-entry (진입)
+#   장중 5분  → collect-5m (분봉 축적)
+#   평일 15:00 → eod-flat (일괄 청산)
+#   평일 15:30 → post-analysis (리포트)
+#   평일 15:45 → collect-daily (일봉 최신화)
+```
+
+Windows 사용자는 crontab 대신 **작업 스케줄러(Task Scheduler)** 로 같은 시각에
+`python -m autotrader run-job <name>` 을 등록하면 된다.
+
+pytest 96 → 107 통과.
+
+---
+
+## 🎉 v1.0 마일스톤 — 로드맵 완성
+
+| 버전 | 반영 |
+|------|------|
+| v0.1 | 골격 (모델·지표·데이터·전략·앙상블·리스크·백테스트) |
+| v0.2 | 실운영 후기 개선판 (휴장일·쿨다운·트래커·하드스톱) |
+| v0.3 | NXT 세션 + SourceReconciler |
+| v0.4 | Screener 3-티어 + StrategyRegistry (validated-only) |
+| v0.5 | 실시간 스트림 계층 (WebSocket 스켈레톤) |
+| v0.6 | 키움 REST 브로커 (주문) |
+| v0.7 | 실패 사례에서 배운 리스크 강화 (CostAudit · chase filter · 일 상한) |
+| v0.8 | Cron 스케줄러 + EOD 청산 + 알림 채널 |
+| v0.9 | 키움 REST 시세 자동 수집 (일봉) |
+| **v1.0** | **분봉 + KRX 유니버스(생존자편향) + run-job (실전 크론 액션)** |
+
+이제 크론 등록만 하면 위 파이프라인이 매일 자동으로 돕니다. 다음은 사용자
+계정으로 KIS/키움 자격증명 넣고 모의계좌에서 2~4주 검증 → 소액 실전 순서.
