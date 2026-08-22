@@ -123,6 +123,25 @@ class KISConfig:
 
 
 @dataclass
+class KiwoomConfig:
+    """키움증권 Open API (REST). v0.5 KiwoomConditionStream(WebSocket) 과 짝.
+    앱키·시크릿은 개발자 센터에서 실전용/모의투자용을 따로 발급받는다."""
+    app_key: str = ""
+    app_secret: str = ""
+    account_number: str = ""
+    is_paper: bool = True
+
+    @classmethod
+    def from_env(cls) -> "KiwoomConfig":
+        return cls(
+            app_key=os.getenv("KIWOOM_APP_KEY", ""),
+            app_secret=os.getenv("KIWOOM_APP_SECRET", ""),
+            account_number=os.getenv("KIWOOM_ACCOUNT_NUMBER", ""),
+            is_paper=os.getenv("KIWOOM_MODE", "paper").lower() != "real",
+        )
+
+
+@dataclass
 class Config:
     costs: Costs = field(default_factory=Costs)
     risk: RiskLimits = field(default_factory=RiskLimits)
@@ -131,6 +150,7 @@ class Config:
     execution: ExecutionCfg = field(default_factory=ExecutionCfg)
     backtest: BacktestCfg = field(default_factory=BacktestCfg)
     kis: KISConfig = field(default_factory=KISConfig)
+    kiwoom: KiwoomConfig = field(default_factory=KiwoomConfig)
     profiles: SymbolProfiles = field(default_factory=SymbolProfiles)
     symbol_kinds: Dict[str, str] = field(default_factory=dict)  # symbol → "etf"|"stock"
 

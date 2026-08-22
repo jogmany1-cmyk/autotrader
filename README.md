@@ -196,3 +196,40 @@ finally:
   필드 이름·URL 변경 여부)를 실전 배포 전에 반드시 확인.
 - **REST vs 스트림**: REST 는 우편, 스트림은 전화. 조건검색 실시간처럼 서버가
   push 하는 이벤트는 스트림으로만 놓치지 않는다.
+
+
+## 11. 키움 REST 어댑터 (v0.6)
+
+Chapter 0 (Kiwoom REST API 입문·설정 편) 참고. v0.5 의
+`KiwoomConditionStream(WebSocket)` 과 짝을 이루는 REST 쪽 어댑터.
+
+### 신설
+- **`config.KiwoomConfig`** — `app_key`, `app_secret`, `account_number`,
+  `is_paper`. `KiwoomConfig.from_env()` 는 `KIWOOM_APP_KEY` / `KIWOOM_APP_SECRET`
+  / `KIWOOM_ACCOUNT_NUMBER` / `KIWOOM_MODE` (기본 paper) 환경변수 사용.
+- **`broker.KiwoomBroker`** — REST 얇은 래퍼. 자격증명 비면 즉시 명확한 예외로
+  실패. 실전(`api.kiwoom.com`) / 모의(`mockapi.kiwoom.com`) URL 자동 분기.
+  OAuth 토큰 12h 캐시(만료 60초 전에만 재발급). `Authorization: Bearer` +
+  `appkey` + `appsecret` + `api-id` 헤더 조합.
+- **`Broker.list_stocks(market_code)`** — 종목 마스터 조회 훅. 기본은 빈 리스트,
+  Kiwoom 은 `ka10099` TR 로 오버라이드.
+
+### 사용 흐름
+```python
+from autotrader.broker import KiwoomBroker
+from autotrader.config import KiwoomConfig
+from autotrader.streaming import KiwoomConditionStream
+
+cfg = KiwoomConfig.from_env()          # env 에서 로드
+rest = KiwoomBroker(cfg)               # 잔고·주문
+token = rest._ensure_token()           # 조건검색 스트림 인증에도 재사용
+ws = KiwoomConditionStream(access_token=token, condition_seq="0",
+                           is_paper=cfg.is_paper)
+```
+
+### 주의
+- 실제 TR ID·엔드포인트·필드명은 벤더 문서(개발자 센터)의 최신값과 맞춰야 함.
+  이 저장소에서는 실 네트워크로 검증하지 않으므로, 실계좌 배포 전 자기 계정으로
+  수동 확인 필수.
+- `requests` 는 옵션 의존성. 없어도 임포트는 성공, 실행 시점에만 실패.
+- IP 등록·앱키 발급 등 계좌 준비 절차는 코드가 아니라 개발자 센터 웹에서 진행.

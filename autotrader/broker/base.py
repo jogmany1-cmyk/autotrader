@@ -20,3 +20,7 @@ class Broker(ABC):
 
     @abstractmethod
     def positions(self) -> Dict[str, Position]: ...
+
+    def list_stocks(self, market_code: str = "0") -> List[dict]:
+        """종목 마스터. 구현체가 지원 시 대체. 기본은 빈 리스트."""
+        return []
