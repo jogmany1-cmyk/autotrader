@@ -39,3 +39,25 @@ def test_extended_market_open_respects_flags():
     assert is_extended_market_open(ts_pre, include_pre=True)
     assert not is_extended_market_open(ts_after, include_after=False)
     assert is_extended_market_open(ts_after, include_after=True)
+
+
+def test_live_trader_filters_to_validated_strategies():
+    import datetime as dt
+    from autotrader.broker import PaperBroker
+    from autotrader.config import Config, Costs
+    from autotrader.data import SyntheticProvider
+    from autotrader.live import LiveTrader
+    from autotrader.registry import StrategyRegistry, StrategyRecord
+
+    reg = StrategyRegistry()
+    reg.upsert(StrategyRecord("day_breakout", dt.datetime.utcnow(), 1.5, 40, -0.10))
+    reg.upsert(StrategyRecord("swing_trend", dt.datetime.utcnow(), 1.5, 40, -0.10))
+    p = SyntheticProvider()
+    cfg = Config.default()
+    cfg.universe.symbols = p.universe()
+    cfg.universe.min_price = 0
+    cfg.universe.min_avg_dollar_vol = 0
+    trader = LiveTrader(p, PaperBroker(1e7, Costs()), cfg,
+                        registry=reg, validated_only=True, dry_run=True)
+    names = {s.name for s in trader.strategies}
+    assert names == {"day_breakout", "swing_trend"}

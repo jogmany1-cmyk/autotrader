@@ -19,6 +19,7 @@ from .config import Config
 from .data import CsvProvider, SyntheticProvider
 from .data.base import DataProvider
 from .live import LiveTrader
+from .registry import StrategyRegistry
 from .screener import Screener
 
 
@@ -87,7 +88,10 @@ def cmd_screen(args) -> int:
     if isinstance(provider, SyntheticProvider):
         cfg.universe.min_price = 0
         cfg.universe.min_avg_dollar_vol = 0
-    sc = Screener(provider, cfg.universe, top_n=args.top).rank()
+    screener = Screener(provider, cfg.universe, top_n=args.top)
+    sc = screener.rank()
+    if screener.last_stats is not None:
+        print(screener.last_stats.as_line())
     print(f"{'RANK':<5}{'SYMBOL':<10}{'SCORE':>8}   factors")
     for i, r in enumerate([x for x in sc if x.passed], 1):
         f = " ".join(f"{k}={v:+.2f}" for k, v in r.factors.items())
@@ -131,10 +135,17 @@ def cmd_paper(args) -> int:
         cfg.universe.min_price = 0
         cfg.universe.min_avg_dollar_vol = 0
     broker = PaperBroker(cfg.backtest.initial_cash, cfg.costs)
+    reg = StrategyRegistry(args.registry) if args.registry else None
     trader = LiveTrader(provider, broker, cfg,
                         ensemble_threshold=args.threshold,
                         ensemble_min_votes=args.votes,
-                        trail_pct=args.trail, dry_run=args.dry_run)
+                        trail_pct=args.trail, dry_run=args.dry_run,
+                        registry=reg, validated_only=args.validated_only)
+    trader.allow_pre_market = args.allow_pre_market
+    trader.allow_after_market = args.allow_after_market
+    if reg is not None:
+        active = ", ".join(s_.name for s_ in trader.strategies) or "<none>"
+        print(f"[REGISTRY] validated_only={args.validated_only}  active={active}")
     for i in range(args.cycles):
         rep = trader.cycle()
         state = "closed" if not rep.market_open else "open"
@@ -147,6 +158,39 @@ def cmd_paper(args) -> int:
     if acc.n:
         print(f"\n예측 정확도: n={acc.n} 승률={acc.win_rate:.2f} "
               f"평균수익={acc.avg_return:+.3f} 목표달성률={acc.target_hit_rate:.2f}")
+    return 0
+
+
+def cmd_validate(args) -> int:
+    reg = StrategyRegistry(args.registry)
+    th = reg.thresholds
+    print(f"승인 기준: PF>={th.min_oos_profit_factor} trades>={th.min_oos_trades} "
+          f"DD>={th.max_oos_drawdown} age<={th.max_age_days}d")
+    validated = set(reg.validated_names())
+    for rec in reg.all_records():
+        mark = "PASS" if rec.name in validated else "FAIL"
+        print(f"  [{mark}] {rec.name:<20} PF={rec.oos_profit_factor:.2f} "
+              f"trades={rec.oos_trades:>4} DD={rec.oos_max_drawdown:+.3f}")
+    return 0
+
+
+def cmd_reconcile(args) -> int:
+    from .reconciler import SourceReconciler
+    a = CsvProvider(args.primary)
+    b = CsvProvider(args.secondary)
+    universe = sorted(set(a.universe()) | set(b.universe()))
+    if not universe:
+        raise SystemExit("두 원천 어디에도 종목이 없습니다")
+    # 데모용 조건: 최근 종가 > 20일 전 종가 (실전에서는 사용자 조건식으로 대체)
+    def predicate(view):
+        bars = view.bars()
+        if len(bars) < 21:
+            return False
+        return bars[-1].close > bars[-21].close
+    report = SourceReconciler(a, b).reconcile(universe, predicate)
+    print(report.summary())
+    if report.only_in_secondary:
+        print("누수 후보(only in secondary):", ", ".join(report.only_in_secondary[:20]))
     return 0
 
 
@@ -188,7 +232,23 @@ def main(argv: Optional[list] = None) -> int:
     p_pp = sub.add_parser("paper")
     p_pp.add_argument("--cycles", type=int, default=3)
     p_pp.add_argument("--dry-run", action="store_true", default=False)
+    p_pp.add_argument("--registry", help="StrategyRegistry JSON 경로")
+    p_pp.add_argument("--validated-only", action="store_true", default=False,
+                      help="레지스트리에서 승인된 전략만 실행")
+    p_pp.add_argument("--allow-pre-market", action="store_true", default=False,
+                      help="NXT 프리마켓(08:00~08:59) 참여")
+    p_pp.add_argument("--allow-after-market", action="store_true", default=False,
+                      help="NXT 애프터마켓(15:30~20:00) 참여")
     p_pp.set_defaults(func=cmd_paper)
+
+    p_val = sub.add_parser("validate")
+    p_val.add_argument("--registry", required=True, help="레지스트리 JSON 경로")
+    p_val.set_defaults(func=cmd_validate)
+
+    p_rec = sub.add_parser("reconcile", help="두 데이터 원천 대조로 누락 종목 감지")
+    p_rec.add_argument("--primary", required=True, help="주 데이터 CSV 디렉터리 (예: KRX)")
+    p_rec.add_argument("--secondary", required=True, help="부 데이터 CSV 디렉터리 (예: KRX+NXT 통합)")
+    p_rec.set_defaults(func=cmd_reconcile)
 
     args = parser.parse_args(argv)
     return args.func(args)

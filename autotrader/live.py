@@ -26,6 +26,7 @@ from .screener import Screener
 from .strategy import (DayBreakout, DayMomentum, DayPullback, Ensemble,
                        MeanReversion, SwingTrend)
 from .strategy.base import Strategy, StrategyContext
+from .registry import StrategyRegistry
 from .tracker import Prediction, PredictionTracker
 
 log = logging.getLogger("autotrader.live")
@@ -50,13 +51,25 @@ class LiveTrader:
                  ensemble_threshold: float = 0.55,
                  ensemble_min_votes: int = 1,
                  trail_pct: float = 0.05,
-                 dry_run: bool = True):
+                 dry_run: bool = True,
+                 registry: Optional[StrategyRegistry] = None,
+                 validated_only: bool = False):
         self.provider = provider
         self.broker = broker
         self.config = config
-        self.strategies = list(strategies) if strategies else [
+        raw_strategies = list(strategies) if strategies else [
             DayBreakout(), DayPullback(), DayMomentum(), SwingTrend(), MeanReversion(),
         ]
+        self.registry = registry
+        self.validated_only = validated_only
+        if validated_only and registry is not None:
+            approved = set(registry.validated_names())
+            self.strategies = [s_ for s_ in raw_strategies if s_.name in approved]
+            if not self.strategies:
+                log.warning("validated_only=True 인데 승인된 전략이 없습니다. "
+                            "레지스트리에 전략을 등록하거나 --validated-only 를 끄세요.")
+        else:
+            self.strategies = raw_strategies
         self.ensemble = Ensemble(self.strategies, config.weights,
                                  threshold=ensemble_threshold,
                                  min_votes=ensemble_min_votes)

@@ -129,3 +129,29 @@ tests/                pytest 스위트 (27개)
 
 - 원문 블로그의 성적(투자금 10만원, 2주간 -2,427원 후 반등)은 표본이 극도로 작고 시장 상승기에 뽑힌 스냅샷입니다. 우리 코드가 그 성적을 재현한다는 뜻이 전혀 아닙니다.
 - "GPT-5.5" 같은 특정 LLM 모델을 프롬프트로 신호 생성하는 부분은 **이번 v0.2 에서 코어에 넣지 않았습니다**. 이유: (a) 결정론적으로 재현 가능한 백테스트가 어렵고, (b) API 비용이 하루 3사이클 기준으로 월 2~3만원 이상이 되며, (c) Risk Engine 이 있는 한 굳이 실행 라인에 LLM 을 두지 않아도 뉴스·공시 스코어를 앙상블 앞단에 붙일 자리는 이미 있음. 붙이려면 `Ensemble` 앞에 `LLMFactor` 를 하나 추가하고 `weights.llm_news` 를 두는 게 최소 침습적입니다.
+
+
+## 9. NXT 통합 · 검증 게이트 (v0.3 / v0.4)
+
+블로그 참고글의 아키텍처 지침을 반영해 실전 배포에 필요한 두 관문을 추가.
+
+### v0.3 — NXT 확장 세션 & SourceReconciler
+- **`market.session_of(ts)`** 는 `pre` (08:00~08:59), `regular` (09:00~15:30),
+  `after` (15:30~20:00), `closed` 넷 중 하나를 돌려준다.
+- **`market.is_extended_market_open(ts, include_pre, include_after)`** 로
+  세션 참여 여부 결정. `LiveTrader.allow_pre_market / allow_after_market` 로 조절.
+- **`reconciler.SourceReconciler(primary, secondary)`** 는 두 DataProvider
+  (KRX 단독 / KRX+NXT 통합)에 같은 조건식을 돌려 `only_in_secondary` (=서버
+  조건에서 새어나간 종목)를 리포트한다. `python -m autotrader reconcile
+  --primary krx/ --secondary integrated/` 로 사용.
+
+### v0.4 — Screener 3-티어 로그 & 검증 게이트
+- **Screener 3-티어**: `tier1(price) → tier2(indicator) → tier3(ranking)`.
+  각 단계 통과 종목 수는 `screener.last_stats.as_line()` 으로 감사 로그.
+  값이 싼 판정을 먼저 돌려 API 조회 한도를 넘겨 연결이 끊기는 사고를 예방.
+- **StrategyRegistry**: 전략별 최근 백테스트 성적을 JSON 파일로 관리.
+  기본 승인 기준은 **OOS Profit Factor ≥ 1.20**, **트레이드 ≥ 20**,
+  **MDD ≥ -25%**, **90일 이내 재검증**. `python -m autotrader validate
+  --registry r.json` 로 통과 여부 확인.
+- **`--validated-only`**: `paper` 실행 시 레지스트리에서 통과한 전략만 앙상블에
+  들어감. "검증되지 않은 규칙은 실행되지 않는다" 원칙의 코드 게이트.
