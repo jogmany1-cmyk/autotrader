@@ -90,6 +90,9 @@ class ExecutionCfg:
     order_type: str = "MARKET"              # MARKET | LIMIT
     limit_offset_bp: float = 20.0           # LIMIT 시 종가 대비 오프셋
     max_holding_bars: int = 20              # 강제 청산까지 최대 보유 봉수
+    # 데이트레이딩 규율 (v0.8): 이 시각(HH:MM, KST)이 되면 보유 전량을 일괄 청산.
+    # None 이면 비활성. 밤 사이 갭·이벤트 리스크를 회피하는 정석적 방어.
+    flat_at_time: str | None = None
 
 
 @dataclass

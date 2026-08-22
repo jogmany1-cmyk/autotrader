@@ -26,6 +26,7 @@ from .screener import Screener
 from .strategy import (DayBreakout, DayMomentum, DayPullback, Ensemble,
                        MeanReversion, SwingTrend)
 from .strategy.base import Strategy, StrategyContext
+from .notify import ConsoleChannel, Notifier
 from .registry import StrategyRegistry
 from .streaming.base import StreamClient, StreamEvent
 from .tracker import Prediction, PredictionTracker
@@ -44,6 +45,7 @@ class CycleReport:
     market_open: bool = True
     skipped_reason: str = ""
     stream_events: int = 0
+    flat_closed: int = 0
     details: List[str] = field(default_factory=list)
 
 
@@ -85,6 +87,10 @@ class LiveTrader:
         self.allow_after_market = False
         # 실시간 조건검색·체결 스트림. 없으면 폴링만 사용.
         self.stream: Optional[StreamClient] = None
+        # 알림 채널: 기본은 조용, 사용자가 트래이더.notifier.add(...) 로 채운다.
+        self.notifier: Notifier = Notifier()
+        # 하루에 한 번만 EOD 청산 실행 보장
+        self._flat_done_for: Optional[str] = None
 
     def cycle(self, now: Optional[datetime] = None) -> CycleReport:
         now = now or datetime.utcnow()
@@ -101,6 +107,33 @@ class LiveTrader:
             return report
 
         self.cooldown.purge_expired(now.date())
+
+        # EOD 일괄 청산 (v0.8): flat_at_time 이 설정되어 있고 지금이 그 시각을 넘었으며
+        # 오늘 아직 안 했으면 보유 전량을 즉시 청산한다.
+        flat_at = self.config.execution.flat_at_time
+        day_key = now.date().isoformat()
+        if (flat_at and self._flat_done_for != day_key
+                and _time_reached(now, flat_at)
+                and isinstance(self.broker, PaperBroker)):
+            positions = self.broker.positions()
+            if positions:
+                prices: Dict[str, float] = {}
+                for sym in positions:
+                    try:
+                        prices[sym] = self.provider.last_price(sym)
+                    except Exception:
+                        continue
+                closed = self.broker.flat_all(prices, now, reason="eod_flat")
+                report.flat_closed = len(closed)
+                for tr in closed:
+                    self.risk.register_exit(tr.pnl, now.date())
+                    self.tracker.record_exit(
+                        symbol=tr.symbol, exit_ts=tr.exit_ts,
+                        exit_price=tr.exit_price, exit_reason=tr.exit_reason,
+                    )
+                self.notifier.info(f"[EOD] flat {len(closed)}건",
+                                   body=", ".join(t.symbol for t in closed))
+            self._flat_done_for = day_key
 
         # 1. Screener
         universe = self.config.universe.symbols or self.provider.universe()
@@ -245,3 +278,12 @@ class LiveTrader:
                     report.orders_rejected += 1
                     report.details.append(f"[stream] {ev.symbol}: broker error {exc}")
         return report
+
+
+def _time_reached(now: datetime, hhmm: str) -> bool:
+    """now 의 시간(HH:MM)이 hhmm(예: "15:00") 을 넘었는지."""
+    try:
+        h, m = [int(x) for x in hhmm.split(":", 1)]
+    except Exception:
+        return False
+    return (now.hour, now.minute) >= (h, m)

@@ -98,6 +98,21 @@ class PaperBroker(Broker):
         self.portfolio.bump_hold_counters()
         return closed
 
+    def flat_all(self, prices: Dict[str, float], ts: datetime,
+                 reason: str = "eod_flat") -> List[Trade]:
+        """보유 전량을 주어진 가격으로 즉시 청산. 데이트레이딩 EOD 청산용."""
+        closed: List[Trade] = []
+        for sym in list(self.portfolio.positions.keys()):
+            price = prices.get(sym)
+            if price is None:
+                continue
+            pos = self.portfolio.positions[sym]
+            order = Order(symbol=sym, side=Side.SELL, qty=pos.qty, tag=reason)
+            trade = self._sell_at(order, price, ts)
+            if trade:
+                closed.append(trade)
+        return closed
+
     def _sell_at(self, order: Order, price: float, ts: datetime) -> Optional[Trade]:
         slip = self.costs.slippage_bp / 10_000
         fill_price = price * (1 - slip)

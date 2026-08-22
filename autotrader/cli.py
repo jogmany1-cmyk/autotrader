@@ -182,6 +182,27 @@ def cmd_validate(args) -> int:
     return 0
 
 
+def cmd_schedule(args) -> int:
+    """실전 자동매매 표준 크론잡 세트를 crontab 형식으로 출력.
+    이 라인들을 `crontab -e` 로 등록하거나 systemd timer 로 변환해 쓴다."""
+    from .scheduler import JobRegistry
+    reg = JobRegistry()
+    reg.register("collect-5m", "*/5 9-15 * * 0-4", lambda t: None,
+                 description="평일 장중 5분봉 수집")
+    reg.register("collect-daily", "45 15 * * 0-4", lambda t: None,
+                 description="장 마감 후 일봉 수집")
+    reg.register("morning-entry", "30 9 * * 0-4", lambda t: None,
+                 description="09:30 진입 사이클")
+    reg.register("eod-flat", "0 15 * * 0-4", lambda t: None,
+                 description="15:00 EOD 일괄 청산")
+    reg.register("post-analysis", "30 15 * * 0-4", lambda t: None,
+                 description="장 마감 후 사후 분석 리포트")
+    print("# autotrader 표준 자동매매 크론잡 (crontab -e 에 붙여 넣기)")
+    for line in reg.crontab_lines(prefix_command=args.prefix):
+        print(line)
+    return 0
+
+
 def cmd_reconcile(args) -> int:
     from .reconciler import SourceReconciler
     a = CsvProvider(args.primary)
@@ -257,6 +278,11 @@ def main(argv: Optional[list] = None) -> int:
     p_rec.add_argument("--primary", required=True, help="주 데이터 CSV 디렉터리 (예: KRX)")
     p_rec.add_argument("--secondary", required=True, help="부 데이터 CSV 디렉터리 (예: KRX+NXT 통합)")
     p_rec.set_defaults(func=cmd_reconcile)
+
+    p_sch = sub.add_parser("schedule", help="표준 자동매매 크론잡을 crontab 라인으로 출력")
+    p_sch.add_argument("--prefix", default="python -m autotrader run-job ",
+                       help="crontab 명령 프리픽스")
+    p_sch.set_defaults(func=cmd_schedule)
 
     args = parser.parse_args(argv)
     return args.func(args)

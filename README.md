@@ -262,3 +262,44 @@ ws = KiwoomConditionStream(access_token=token, condition_seq="0",
   시 그 날은 자동으로 신규 진입 금지.
 
 pytest 67 → 75 통과.
+
+
+## 13. Cron 스케줄러 · EOD 청산 · 알림 채널 (v0.8)
+
+"AI 알고리즘 기반 주식 자동매매 봇 구축" 영상의 아키텍처를 검증. 특정 플랫폼·
+서비스(OpenClaw, Supabase, 라이너, 텔레그램) 종속 부분은 걷어내고 **파이썬
+라이브러리로서 진짜 빠져 있던 세 가지**만 반영.
+
+### 신설
+- **`scheduler.py`** — 표준 5-필드 cron 파서 + `JobRegistry`. `*/5 9-15 * * 0-4`,
+  `0 15 * * 0-4` 같은 표현식으로 잡을 코드에서 선언하고, `next_after(ts)`,
+  `next_schedule()`, `crontab_lines()`, `run_forever()` 로 관리.
+- **`ExecutionCfg.flat_at_time`** (예: `"15:00"`) + **`PaperBroker.flat_all()`** —
+  데이트레이딩 규율(밤 사이 갭·이벤트 리스크 회피). `LiveTrader` 는 매 사이클
+  시작에서 이 시각을 지났으면 자동으로 보유 전량 청산 (하루 1회 보장).
+  청산은 `exit_reason="eod_flat"` 로 기록되어 tracker·metrics 에 반영.
+- **`notify.py`** — `NotificationChannel` 추상 + `ConsoleChannel` /
+  `NoopChannel` / `RecordingChannel` 기본 구현 + `Notifier` 다중 팬아웃.
+  텔레그램/슬랙/이메일 등 벤더 채널은 사용자가 직접 붙일 수 있도록 표면만 제공.
+  실패하는 채널이 있어도 다른 채널로는 계속 전달됨(매매에 알림이 영향 X).
+
+### CLI 신규
+```bash
+# 실전 자동매매 표준 크론잡 5개를 crontab 라인으로 출력
+python -m autotrader schedule --prefix "python -m autotrader run-job "
+# 출력 예:
+#   */5 9-15 * * 0-4 python -m autotrader run-job collect-5m   # 평일 장중 5분봉 수집
+#   0 15   * * 0-4 python -m autotrader run-job eod-flat        # 15:00 EOD 일괄 청산
+```
+
+이 라인들을 `crontab -e` 로 등록하면 실전 데이트레이딩 워크플로가 완성된다.
+
+### 반영하지 않은 것 (판단 결과)
+- **팩터 가중치 자동 조정 피드백 루프** — 과최적화의 정확히 그 문제.
+  v0.4 `StrategyRegistry` 의 수동 승인·90일 만료 방식이 더 안전.
+- **특정 벤더 종속** (OpenClaw · Supabase · 라이너 · 텔레그램 · OpenDART) —
+  아키텍처만 취하고 구현은 사용자가 자기 스택에 붙이도록 훅만 제공.
+- **영상의 백테스트 성적 (승률 74.8%, 손익비 5.86)** — 우리 CostAudit + OOS
+  원칙과 정합성 없어 반영 X.
+
+pytest 75 → 89 통과.
