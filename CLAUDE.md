@@ -12,6 +12,32 @@ All commands below run from the **repo root** (there is no longer an `autotrader
 
 Develop on `main`. This repo has no other special branch — unlike the old combined repo, there's no diary content to keep separate from.
 
+## Validation state
+
+This project is currently PRE-LIVE / UNDER VALIDATION.
+
+Passing unit tests or synthetic-data tests does not establish trading validity or profitability.
+
+Required promotion path:
+
+Kiwoom real data → data integrity → historical universe → backtest → OOS → registry approval → paper trading → explicit human approval → live
+
+Never skip a stage. AI agents may recommend promotion but may never grant live approval.
+
+For non-trivial changes:
+
+inspect → plan → implement → test → verify → report
+
+Never report unverified behaviour as verified.
+
+When a meaningful failure is found, prefer:
+
+failure → regression test → fix → executable gate
+
+over adding more prose rules.
+
+Detailed validation procedures belong in `.claude/skills/`, not in this file.
+
 ## Commands
 
 ```bash
