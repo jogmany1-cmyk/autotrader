@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -45,6 +46,8 @@ class _Token:
     value: str
     expires_at: float
 
+
+log = logging.getLogger(__name__)
 
 class KiwoomProvider(DataProvider):
     """키움 REST 로 종목·일봉·분봉을 가져오는 DataProvider.
@@ -70,6 +73,9 @@ class KiwoomProvider(DataProvider):
         self.default_market = default_market
         self._token: Optional[_Token] = None
         self._universe_cache: Optional[List[str]] = None
+        # 직전 refresh_* 호출에서 실패한 (종목, 사유). 개수만으로는 무엇이
+        # 잘못됐는지 알 수 없어 수집이 조용히 0건으로 끝나던 문제를 막는다.
+        self.last_failures: List[Tuple[str, str]] = []
         os.makedirs(cache_dir, exist_ok=True)
 
     # ------------------------------------------------------- 인증·HTTP
@@ -322,14 +328,9 @@ class KiwoomProvider(DataProvider):
                         interval: int = 5, limit: int = 500) -> Tuple[int, int]:
         """분봉 최신화. Cron 잡 collect-5m 에서 매 5분마다 호출."""
         symbols = list(symbols) if symbols else self.universe()
-        ok = fail = 0
-        for sym in symbols:
-            try:
-                self.history_minutes(sym, interval=interval, limit=limit)
-                ok += 1
-            except DataError:
-                fail += 1
-        return ok, fail
+        return self._refresh(
+            symbols,
+            lambda sym: self.history_minutes(sym, interval=interval, limit=limit))
 
     def refresh_all(self, symbols: Optional[Sequence[str]] = None,
                     limit: int = 500) -> Tuple[int, int]:
@@ -337,14 +338,31 @@ class KiwoomProvider(DataProvider):
         Cron 잡 collect-daily 에서 호출하도록 설계.
         """
         symbols = list(symbols) if symbols else self.universe()
-        ok = fail = 0
+        return self._refresh(symbols, lambda sym: self.history(sym, limit=limit))
+
+    def _refresh(self, symbols: Sequence[str], fetch_one) -> Tuple[int, int]:
+        """종목별 수집 루프. 실패는 세는 것으로 끝내지 않고 사유를 남긴다.
+
+        이전 구현은 `except DataError: fail += 1` 로 예외를 통째로 버려서,
+        수집이 전부 실패해도 화면에는 `ok=0 fail=1` 만 찍혔다. 무엇이
+        잘못됐는지 알 수 없으면 고칠 수도 없다. 사유를 `last_failures` 에
+        모으고 경고 로그로도 남긴다.
+
+        DataError 뿐 아니라 모든 예외를 잡는다. 한 종목의 네트워크 오류가
+        유니버스 전체 수집을 중단시키면 안 되기 때문이다. 사유를 기록하므로
+        삼키는 것이 아니라 미루는 것이다.
+        """
+        self.last_failures = []
+        ok = 0
         for sym in symbols:
             try:
-                self.history(sym, limit=limit)
+                fetch_one(sym)
                 ok += 1
-            except DataError:
-                fail += 1
-        return ok, fail
+            except Exception as exc:                    # noqa: BLE001
+                reason = f"{type(exc).__name__}: {exc}"
+                self.last_failures.append((sym, reason))
+                log.warning("수집 실패 %s — %s", sym, reason)
+        return ok, len(self.last_failures)
 
 
 def _merge_bars(a: Sequence[Bar], b: Sequence[Bar]) -> List[Bar]:

@@ -194,6 +194,11 @@ def cmd_fetch(args) -> int:
     else:
         ok, fail = provider.refresh_all(symbols, limit=args.limit)
     print(f"[DONE ] ok={ok} fail={fail}")
+    # 실패 개수만 찍고 끝내면 무엇이 잘못됐는지 알 수 없다. 사유를 그대로 보여준다.
+    for sym, reason in provider.last_failures[:20]:
+        print(f"  [FAIL] {sym}: {reason}")
+    if len(provider.last_failures) > 20:
+        print(f"  … 그 외 {len(provider.last_failures) - 20}건")
     return 0 if fail == 0 else 1
 
 
