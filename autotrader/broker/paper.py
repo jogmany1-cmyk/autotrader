@@ -12,6 +12,7 @@ from ..config import Costs
 from ..models import Fill, Order, Position, Side, Trade
 from ..portfolio import Portfolio
 from .base import Broker, BrokerError
+from ..market import now_kst
 
 
 class PaperBroker(Broker):
@@ -35,7 +36,7 @@ class PaperBroker(Broker):
                ts: Optional[datetime] = None,
                stop: Optional[float] = None,
                target: Optional[float] = None) -> Fill:
-        ts = ts or datetime.utcnow()
+        ts = ts or now_kst()
         slip = self.costs.slippage_bp / 10_000
         if order.side is Side.BUY:
             fill_price = price_hint * (1 + slip)

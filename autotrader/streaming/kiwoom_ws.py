@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from .base import StreamClient, StreamEvent, StreamError
+from ..market import now_kst
 
 # 모의 / 실 서버 소켓 URL — 실전 배포 시 벤더 최신 값으로 갱신 필요.
 KIWOOM_WS_PAPER = "wss://mockapi.kiwoom.com:10000/api/dostk/websocket"
@@ -75,20 +76,20 @@ class KiwoomConditionStream(StreamClient):
                     if trnm == "PING":
                         # "안 끊겼어" → "응 안 끊겼어" 로 그대로 반사
                         await ws.send(raw)
-                        emit(StreamEvent(datetime.utcnow(), "heartbeat"))
+                        emit(StreamEvent(now_kst(), "heartbeat"))
                         continue
                     if trnm == "REAL":
                         # 9001 필드에 종목 코드
                         symbol = msg.get("9001") or msg.get("data", {}).get("9001")
-                        emit(StreamEvent(datetime.utcnow(), "signal",
+                        emit(StreamEvent(now_kst(), "signal",
                                          symbol=symbol, payload=msg))
                         continue
                     # 그 외는 진단용
-                    emit(StreamEvent(datetime.utcnow(), "meta", payload=msg))
+                    emit(StreamEvent(now_kst(), "meta", payload=msg))
 
         try:
             import asyncio
             asyncio.run(_pump())
         except Exception as exc:  # pragma: no cover — 실 네트워크는 테스트하지 않음
-            emit(StreamEvent(datetime.utcnow(), "error", None, {"error": str(exc)}))
+            emit(StreamEvent(now_kst(), "error", None, {"error": str(exc)}))
             raise

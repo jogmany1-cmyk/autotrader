@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 from ..config import KiwoomConfig
 from ..models import Fill, Order, Position, Side
 from .base import Broker, BrokerError
+from ..market import now_kst
 
 KIWOOM_REST_REAL = "https://api.kiwoom.com"
 KIWOOM_REST_PAPER = "https://mockapi.kiwoom.com"
@@ -122,7 +123,7 @@ class KiwoomBroker(Broker):
                 continue
             sym = row.get("stk_cd", "").strip()
             avg = float(row.get("pur_pric", 0.0))
-            out[sym] = Position(sym, qty, avg, datetime.utcnow())
+            out[sym] = Position(sym, qty, avg, now_kst())
         return out
 
     # ---------------------------------------------------------------- 주문
@@ -149,7 +150,7 @@ class KiwoomBroker(Broker):
             raise BrokerError(f"Kiwoom 주문 거부: {js.get('return_msg')}")
         # 접수 응답 — 실제 체결가는 통보 WebSocket 이나 조회로 확인.
         return Fill(
-            ts=datetime.utcnow(),
+            ts=now_kst(),
             symbol=order.symbol,
             side=order.side,
             qty=order.qty,

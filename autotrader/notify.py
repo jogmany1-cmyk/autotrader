@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from .market import now_kst
 
 
 log = logging.getLogger("autotrader.notify")
@@ -85,13 +86,13 @@ class Notifier:
 
     # 편의 헬퍼 -----------------------------------------------------------
     def info(self, title: str, body: str = "", **meta) -> None:
-        self.send(Notification(datetime.utcnow(), "info", title, body, meta))
+        self.send(Notification(now_kst(), "info", title, body, meta))
 
     def warn(self, title: str, body: str = "", **meta) -> None:
-        self.send(Notification(datetime.utcnow(), "warn", title, body, meta))
+        self.send(Notification(now_kst(), "warn", title, body, meta))
 
     def error(self, title: str, body: str = "", **meta) -> None:
-        self.send(Notification(datetime.utcnow(), "error", title, body, meta))
+        self.send(Notification(now_kst(), "error", title, body, meta))
 
     def trade(self, title: str, body: str = "", **meta) -> None:
-        self.send(Notification(datetime.utcnow(), "trade", title, body, meta))
+        self.send(Notification(now_kst(), "trade", title, body, meta))

@@ -30,6 +30,7 @@ from .notify import ConsoleChannel, Notifier
 from .registry import StrategyRegistry
 from .streaming.base import StreamClient, StreamEvent
 from .tracker import Prediction, PredictionTracker
+from .market import now_kst
 
 log = logging.getLogger("autotrader.live")
 
@@ -93,7 +94,7 @@ class LiveTrader:
         self._flat_done_for: Optional[str] = None
 
     def cycle(self, now: Optional[datetime] = None) -> CycleReport:
-        now = now or datetime.utcnow()
+        now = now or now_kst()
         report = CycleReport(ts=now, candidates=0, signals=0,
                              orders_placed=0, orders_rejected=0, closed_trades=0)
 

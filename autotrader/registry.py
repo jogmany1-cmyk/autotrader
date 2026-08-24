@@ -17,6 +17,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+from .market import now_kst
 
 
 @dataclass
@@ -37,7 +38,7 @@ class StrategyRecord:
     notes: str = ""
 
     def is_valid(self, th: ValidationThresholds, now: Optional[datetime] = None) -> bool:
-        now = now or datetime.utcnow()
+        now = now or now_kst()
         if (now - self.validated_at) > timedelta(days=th.max_age_days):
             return False
         if self.oos_trades < th.min_oos_trades:

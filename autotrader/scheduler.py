@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional, Sequence
+from .market import now_kst
 
 # ---------------------------------------------------------------- 파서
 _FIELD_BOUNDS = (
@@ -151,7 +152,7 @@ class JobRegistry:
         stop_event = stop_event or threading.Event()
         last_fired: Dict[str, datetime] = {}
         while not stop_event.is_set():
-            now = datetime.utcnow().replace(second=0, microsecond=0)
+            now = now_kst().replace(second=0, microsecond=0)
             for job in self._jobs.values():
                 if last_fired.get(job.name) == now:
                     continue

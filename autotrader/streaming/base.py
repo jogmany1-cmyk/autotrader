@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional
+from ..market import now_kst
 
 
 class StreamError(RuntimeError):
@@ -71,7 +72,7 @@ class StreamClient(ABC):
         except Exception as exc:
             if self._on_error:
                 self._on_error(exc)
-            self._emit(StreamEvent(datetime.utcnow(), "error", None, {"error": str(exc)}))
+            self._emit(StreamEvent(now_kst(), "error", None, {"error": str(exc)}))
 
     # ----------------------------------------------------------- extension
     @abstractmethod

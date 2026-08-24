@@ -22,6 +22,7 @@ from .data.base import DataError, DataProvider
 from .live import LiveTrader
 from .notify import ConsoleChannel, Notifier
 from .registry import StrategyRegistry
+from .market import now_kst
 
 log = logging.getLogger("autotrader.jobs")
 
@@ -70,7 +71,7 @@ class JobContext:
 
 def job_morning_entry(ctx: JobContext, now: Optional[datetime] = None) -> str:
     """09:30 진입 사이클 — LiveTrader.cycle() 한 번 실행."""
-    now = now or datetime.utcnow()
+    now = now or now_kst()
     cfg = ctx.config()
     provider = ctx.provider()
     if not cfg.universe.symbols:
@@ -90,7 +91,7 @@ def job_morning_entry(ctx: JobContext, now: Optional[datetime] = None) -> str:
 
 def job_eod_flat(ctx: JobContext, now: Optional[datetime] = None) -> str:
     """15:00 EOD 일괄 청산 — flat_at_time 을 지금으로 강제 세팅 후 사이클."""
-    now = now or datetime.utcnow()
+    now = now or now_kst()
     cfg = ctx.config()
     cfg.execution.flat_at_time = now.strftime("%H:%M")
     provider = ctx.provider()

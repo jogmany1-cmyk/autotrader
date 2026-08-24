@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 from ..config import KISConfig
 from ..models import Fill, Order, Position, Side
 from .base import Broker, BrokerError
+from ..market import now_kst
 
 REAL_BASE = "https://openapi.koreainvestment.com:9443"
 PAPER_BASE = "https://openapivts.koreainvestment.com:29443"
@@ -121,7 +122,7 @@ class KISBroker(Broker):
                 continue
             sym = row["pdno"]
             avg = float(row.get("pchs_avg_pric", 0.0))
-            out[sym] = Position(sym, qty, avg, datetime.utcnow())
+            out[sym] = Position(sym, qty, avg, now_kst())
         return out
 
     # --- 주문 ---------------------------------------------------------------
@@ -152,7 +153,7 @@ class KISBroker(Broker):
         # 실제 체결가는 체결통보 웹소켓 또는 조회로 확인. 여기서는 접수 응답을
         # 그대로 근사치로 담아 리턴한다.
         return Fill(
-            ts=datetime.utcnow(),
+            ts=now_kst(),
             symbol=order.symbol,
             side=order.side,
             qty=order.qty,
