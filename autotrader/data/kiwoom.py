@@ -83,6 +83,11 @@ class KiwoomProvider(DataProvider):
         # True 면 응답 본문 일부를 그대로 출력한다 (CLI --debug).
         # 요청 헤더는 절대 찍지 않는다 — appkey/secret 이 들어 있다.
         self.debug = False
+        # 키움 유량 제한: 실제 응답이 "유량=1" 이라고 알려줬다 (초당 1건).
+        # 연속조회는 한 종목에 최대 30페이지를 연달아 요청하므로, 대기 없이
+        # 몰아치면 첫 페이지부터 429 를 맞는다. 10% 여유를 둔다.
+        self.min_interval = 1.1
+        self._last_request_at = 0.0
         os.makedirs(cache_dir, exist_ok=True)
 
     # ------------------------------------------------------- 인증·HTTP
@@ -94,13 +99,13 @@ class KiwoomProvider(DataProvider):
         now = time.time()
         if self._token and self._token.expires_at - 60 > now:
             return self._token.value
-        r = self._http().post(
-            f"{self.base}/oauth2/token",
-            data=json.dumps({
+        r = self._post(
+            "/oauth2/token",
+            {
                 "grant_type": "client_credentials",
                 "appkey": self.config.app_key,
                 "secretkey": self.config.app_secret,
-            }),
+            },
             headers={"content-type": "application/json"},
             timeout=10,
         )
@@ -137,11 +142,10 @@ class KiwoomProvider(DataProvider):
         return list(universe)
 
     def _fetch_symbols(self, market_code: str) -> List[Dict[str, Any]]:
-        r = self._http().post(
-            f"{self.base}/api/dostk/stkinfo",
+        r = self._post(
+            "/api/dostk/stkinfo",
+            {"mrkt_tp": market_code},
             headers=self._headers("ka10099"),
-            data=json.dumps({"mrkt_tp": market_code}),
-            timeout=15,
         )
         if r.status_code != 200:
             raise DataError(f"Kiwoom 종목목록 실패({market_code}): {r.status_code}")
@@ -188,15 +192,14 @@ class KiwoomProvider(DataProvider):
         out: List[Bar] = []
         cont_yn, next_key = "N", ""
         for _ in range(10):  # 분봉은 페이지가 많을 수 있어 상한 낮게
-            r = self._http().post(
-                f"{self.base}/api/dostk/chart",
-                headers=self._headers("ka10080", cont_yn=cont_yn, next_key=next_key),
-                data=json.dumps({
+            r = self._post(
+                "/api/dostk/chart",
+                {
                     "stk_cd": symbol,
                     "tic_scope": str(interval),
                     "upd_stkpc_tp": "1",
-                }),
-                timeout=15,
+                },
+                headers=self._headers("ka10080", cont_yn=cont_yn, next_key=next_key),
             )
             if r.status_code != 200:
                 raise DataError(f"Kiwoom 분봉 실패({symbol}, {interval}m): "
@@ -251,10 +254,9 @@ class KiwoomProvider(DataProvider):
         out: List[Bar] = []
         cont_yn, next_key = "N", ""
         for _ in range(30):  # 페이지네이션 최대 30회 안전 상한
-            r = self._http().post(
-                f"{self.base}/api/dostk/chart",
-                headers=self._headers("ka10081", cont_yn=cont_yn, next_key=next_key),
-                data=json.dumps({
+            r = self._post(
+                "/api/dostk/chart",
+                {
                     "stk_cd": symbol,
                     # base_dt 는 필수다. 빈 문자열이 "오늘" 로 해석될 거라고
                     # 추측했다가 키움이 이렇게 거절했다:
@@ -264,8 +266,8 @@ class KiwoomProvider(DataProvider):
                     # 한국 시간 09:00 이전에 하루 전 날짜가 들어간다).
                     "base_dt": now_kst().strftime("%Y%m%d"),
                     "upd_stkpc_tp": "1", # 수정주가 사용
-                }),
-                timeout=15,
+                },
+                headers=self._headers("ka10081", cont_yn=cont_yn, next_key=next_key),
             )
             if r.status_code != 200:
                 raise DataError(
@@ -367,6 +369,52 @@ class KiwoomProvider(DataProvider):
         if raw is None:
             raise ValueError("빈 값")
         return abs(float(str(raw).replace(",", "").strip().lstrip("+")))
+
+    # ------------------------------------------------------- 요청 통로
+    # 모든 키움 호출은 _post 를 통과한다. 유량 제한 준수와 429 재시도를 한 곳에
+    # 두기 위해서다. 이전에는 네 군데가 각자 requests.post 를 불러서, 유량을
+    # 지키는 곳도 429 를 처리하는 곳도 없었다. 사용자의 실제 수집이 이렇게 죽었다:
+    #   HTTP 429 허용된 API 요청 개수를 초과하였습니다 [유량=1, API ID=ka10081]
+
+    _RETRIES = 3
+
+    def _throttle(self) -> None:
+        if self.min_interval <= 0:
+            return
+        gap = time.monotonic() - self._last_request_at
+        if gap < self.min_interval:
+            time.sleep(self.min_interval - gap)
+        self._last_request_at = time.monotonic()
+
+    def _retry_wait(self, response, attempt: int) -> float:
+        """서버가 Retry-After 를 주면 따르고, 없으면 지수 백오프."""
+        raw = (response.headers or {}).get("Retry-After")
+        try:
+            if raw is not None:
+                return max(float(raw), self.min_interval)
+        except (TypeError, ValueError):
+            pass
+        return max(self.min_interval, 1.0) * (2 ** attempt)
+
+    def _post(self, path: str, payload: Dict, headers: Dict,
+              timeout: int = 15):
+        """키움 POST 한 번. 유량을 지키고 429 는 물러섰다가 다시 시도한다."""
+        url = f"{self.base}{path}"
+        body = json.dumps(payload)
+        for attempt in range(self._RETRIES + 1):
+            self._throttle()
+            r = self._http().post(url, headers=headers, data=body, timeout=timeout)
+            if r.status_code != 429:
+                return r
+            if attempt == self._RETRIES:
+                raise DataError(
+                    f"키움 요청 한도 초과 — {self._RETRIES + 1}회 시도했지만 계속 "
+                    f"429 입니다. --min-interval 을 올려 보세요 "
+                    f"(현재 {self.min_interval}초). {r.text[:200]}")
+            wait = self._retry_wait(r, attempt)
+            log.warning("429 유량 초과 — %.1f초 후 재시도 (%d/%d)",
+                        wait, attempt + 1, self._RETRIES)
+            time.sleep(wait)
 
     # ---------------------------------------------------- 응답 진단
     # 키움은 HTTP 200 으로 응답하면서 본문에 오류 코드를 담는다. 이것을 보지

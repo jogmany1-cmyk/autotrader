@@ -186,6 +186,7 @@ def cmd_fetch(args) -> int:
         return 2
 
     provider.debug = args.debug
+    provider.min_interval = args.min_interval
     symbols = args.symbol or provider.universe()
     kind = f"{args.minutes}m" if args.minutes else "daily"
     print(f"[FETCH] {len(symbols)}개 심볼 · {kind} → 캐시 {args.cache} "
@@ -424,6 +425,9 @@ def main(argv: Optional[list] = None) -> int:
                       help="분봉 간격(1/3/5/10/15/30/45/60). 0 이면 일봉 수집.")
     p_ft.add_argument("--real", action="store_true",
                       help="실전 서버 사용 (기본은 모의)")
+    p_ft.add_argument("--min-interval", type=float, default=1.1,
+                      help="요청 사이 최소 대기 초. 키움 유량 제한이 초당 1건이라 "
+                           "기본 1.1초. 429 가 계속 나면 올린다")
     p_ft.add_argument("--debug", action="store_true",
                       help="응답 본문 일부를 출력 (벤더 필드 불일치 진단용). "
                            "요청 헤더는 출력하지 않으므로 앱키는 노출되지 않음")
