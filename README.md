@@ -87,7 +87,7 @@ pip install pytest
 pytest -q
 ```
 
-27개 테스트가 지표·데이터·전략·리스크·포트폴리오·브로커·백테스트·스크리너·성과지표를 검증합니다.
+139개 테스트가 지표·데이터·데이터무결성·전략·리스크·포트폴리오·브로커·백테스트·스크리너·성과지표를 검증합니다.
 
 ## 7. 파일 지도
 
@@ -102,11 +102,12 @@ autotrader/
   risk.py             Risk Engine — 사이징 · 계좌한도 · 쿨다운
   portfolio.py        포지션 · 트레일링 스탑 · 라운드트립 트레이드 기록
   broker/             PaperBroker · KISBroker (KIS Open API 스텁)
+  dataquality.py      데이터 무결성 검사 (백테스트 이전 관문)
   metrics.py          성과지표
   backtest.py         이벤트 기반 백테스트, 자동 train/val/OOS 분할
   live.py             LiveTrader — 페이퍼/실계좌 공통 사이클
   cli.py              `python -m autotrader …`
-tests/                pytest 스위트 (27개)
+tests/                pytest 스위트 (139개)
 ```
 
 
@@ -432,3 +433,87 @@ pytest 96 → 107 통과.
 
 이제 크론 등록만 하면 위 파이프라인이 매일 자동으로 돕니다. 다음은 사용자
 계정으로 KIS/키움 자격증명 넣고 모의계좌에서 2~4주 검증 → 소액 실전 순서.
+
+
+## 16. 데이터 무결성 게이트 (v1.1)
+
+**"이 시세가 믿을 만한가" 를 묻는 자리가 파이프라인에 없었다.** 그래서 만들었다.
+
+`CsvProvider` 의 실제 동작을 보면 왜 필요한지 분명하다.
+
+| 원본의 결함 | 지금까지 벌어지던 일 |
+|---|---|
+| 숫자 칸이 깨진 행 | **조용히 버려짐** — 500행 파일이 480봉으로 줄어도 아무 경고 없음 |
+| 날짜 칸이 깨진 행 | 파일 전체가 `DataError` 로 실패 |
+| 원본이 뒤섞인 순서 | 읽으면서 정렬돼 흔적조차 안 남음 |
+
+그 침묵이 "합성 데이터에서는 잘 되던 전략이 실전에서 이상하게 동작하는" 사고의
+씨앗이다. `autotrader/dataquality.py` 는 그 침묵을 깬다 (데이터를 고치지는 않는다).
+
+### 검사 항목
+
+**ERROR — 데이터 자체가 모순. 고치거나 다시 받기 전에는 쓰면 안 된다.**
+
+| 코드 | 잡아내는 것 |
+|---|---|
+| `ohlc_violation` | 고저 역전, 고저 범위 밖의 시가/종가 |
+| `nonpositive_price` | 0 이하 가격 |
+| `duplicate_date` | 같은 날짜가 두 번 |
+| `unsorted` | 앞 봉보다 이른 시각의 봉 |
+| `future_bar` | 기준일 이후의 봉 |
+| `negative_volume` | 음수 거래량 |
+| `dropped_rows` | 원본 행 수 대비 적재 봉 수 부족 (조용히 버려진 행) |
+| `empty` | 봉이 하나도 없음 |
+
+**WARN — 값은 성립하지만 백테스트를 왜곡할 수 있다.**
+
+| 코드 | 잡아내는 것 |
+|---|---|
+| `missing_trading_days` | 거래일인데 봉이 없음 (휴장일은 제외하고 셈) |
+| `long_gap` | 5거래일 이상 연속 결측 (거래정지 의심) |
+| `split_suspect` | 종가가 1/2·1/5·1/10 등 분할 비율로 점프 — **액면분할 미조정** |
+| `price_jump` | 가격제한폭(±30%) 초과인데 분할 비율은 아님 |
+| `zero_volume` / `flat_bars` | 거래량 0, O=H=L=C 정지봉 비율 초과 |
+| `short_history` | 200봉 미만이라 장기 전략 검증 불가 |
+| `stale_data` | 마지막 봉이 오래됨 — 수집이 멈춰 있음 |
+| `bar_on_closed_day` | 휴장일에 봉이 존재 |
+| `calendar_uncovered` | 휴장일 표(2024~2027) 밖이라 결측 검사를 생략했음 |
+
+### 거짓 경보를 내지 않기 위한 두 가지 장치
+
+1. **휴장일 표 범위 밖은 결측 판정을 하지 않는다.** `market.KRX_HOLIDAYS` 는
+   2024~2027 만 담고 있어, 2021년 데이터에 결측 판정을 걸면 그해 공휴일이 전부
+   결측으로 잡힌다. 대신 `calendar_uncovered` 로 "검사를 생략했다" 는 사실을 알린다.
+2. **같은 결함을 반복해 외치지 않는다.** 봉마다 걸리는 검사는 종목·코드 단위로
+   묶어 건수와 표본 날짜만 보고한다. 깨진 파일 하나가 수천 줄을 쏟아내면
+   아무도 리포트를 읽지 않기 때문이다.
+
+### 사용
+
+```bash
+# 수집한 캐시 검사 (ERROR 있으면 종료코드 1)
+python -m autotrader --csv data/kiwoom validate-data
+
+# 백테스트 이전 게이트로 — 더러운 데이터면 여기서 멈춘다
+python -m autotrader --csv data/kiwoom validate-data && \
+  python -m autotrader --csv data/kiwoom backtest
+
+# WARN 도 불허 + 상세 리포트 JSON 저장
+python -m autotrader --csv data/kiwoom validate-data --strict --output runs/quality.json
+```
+
+출력 예 (일부러 망가뜨린 표본):
+
+```
+== 데이터 무결성 검사 (data/kiwoom, 기준일 2025-12-25) ==
+  symbols=7  clean=1  errors=5(3종목)  warnings=19  unreadable=0
+  [ERROR] BADOHLC    ohlc_violation      2025-01-16  2건 — high(1) < low(10049.9) (예: 2025-01-16, 2025-02-18)
+  [ERROR] DROPPED    dropped_rows        -           2건 — 원본 240행 중 2행이 파싱되지 못하고 버려짐 (적재 238봉)
+  [WARN]  SPLIT      split_suspect       2025-06-02  종가 11051.2 → 2212.4 (×0.2002, 1/5 분할 부근) — 액면분할 미조정 의심
+  판정: FAIL
+```
+
+주요 옵션: `--symbol`(반복) · `--min-bars` · `--jump-pct` · `--long-gap-days` ·
+`--stale-days` · `--as-of` · `--show 0`(전체 출력) · `--strict` · `--output`.
+
+pytest 107 → 139 통과.

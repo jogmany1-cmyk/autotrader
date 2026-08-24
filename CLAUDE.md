@@ -24,6 +24,12 @@ Kiwoom real data → data integrity → historical universe → backtest → OOS
 
 Never skip a stage. AI agents may recommend promotion but may never grant live approval.
 
+The data-integrity stage has an executable gate: `autotrader validate-data` exits
+non-zero when the price data is internally inconsistent (`dataquality.py`). Run it
+on every freshly collected cache before backtesting — `CsvProvider` silently drops
+unparseable rows and sorts what it reads, so corrupt input otherwise reaches the
+backtester without a single complaint.
+
 For non-trivial changes:
 
 inspect → plan → implement → test → verify → report
@@ -52,6 +58,10 @@ python -m autotrader --csv data/kospi backtest --output out.json
 # Auto-collect price history from Kiwoom REST (needs KIWOOM_APP_KEY etc.)
 python -m autotrader fetch --cache ./data/kiwoom --symbol 005930 --limit 500
 python -m autotrader fetch --cache ./data/kiwoom --minutes 5   # 분봉
+
+# Data integrity gate (run BEFORE trusting any backtest on real data)
+python -m autotrader --csv data/kiwoom validate-data
+python -m autotrader --csv data/kiwoom validate-data --strict --output runs/quality.json
 
 # Strategy registry gate (only run validated strategies live)
 python -m autotrader validate --registry runs/registry.json
@@ -83,7 +93,7 @@ python -m autotrader backtest --threshold 0.45
 
 ```bash
 pip install pytest             # optional dep
-pytest -q                      # entire suite (currently ~107 tests)
+pytest -q                      # entire suite (currently ~139 tests)
 pytest tests/test_backtest.py  # one file
 pytest -q -k "cost_audit"      # keyword filter
 ```

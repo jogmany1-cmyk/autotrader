@@ -223,6 +223,68 @@ def cmd_validate(args) -> int:
     return 0
 
 
+def cmd_validate_data(args) -> int:
+    """실데이터 무결성 검사. 승격 경로 2단계의 실행 가능한 게이트.
+
+    종료코드 0 = 통과, 1 = 결함 발견(ERROR, --strict 면 WARN 포함), 2 = 대상 없음.
+    크론이나 CI 에서 `autotrader --csv data/kiwoom validate-data || exit 1` 로
+    쓰면 더러운 데이터가 백테스트로 흘러 들어가는 것을 막을 수 있다.
+    """
+    from datetime import date as _date
+
+    from .dataquality import ERROR, DataQualityChecker, QualityLimits
+
+    limits = QualityLimits(min_bars=args.min_bars, jump_pct=args.jump_pct,
+                           long_gap_days=args.long_gap_days,
+                           stale_days=args.stale_days)
+    as_of = _date.fromisoformat(args.as_of) if args.as_of else None
+    checker = DataQualityChecker(limits, as_of=as_of)
+
+    if args.csv:
+        rep = checker.check_csv_dir(args.csv, args.symbol)
+        source = args.csv
+    else:
+        provider = SyntheticProvider()
+        rep = checker.check_provider(provider, args.symbol)
+        source = "합성 데이터 (실데이터 검증에는 --csv 를 쓰세요)"
+    if not rep.symbols and not rep.unreadable:
+        print(f"[ERROR] 검사할 종목이 없습니다: {source}")
+        return 2
+
+    print(f"== 데이터 무결성 검사 ({source}, 기준일 {rep.as_of}) ==")
+    print(f"  {rep.summary()}")
+    for sym, reason in rep.unreadable:
+        print(f"  [ERROR] {sym:<10} unreadable             -  {reason}")
+    shown = 0
+    for sym_rep in rep.symbols:
+        for issue in sorted(sym_rep.issues, key=lambda i: (i.severity != ERROR,)):
+            if args.show and shown >= args.show:
+                break
+            print("  " + issue.as_line())
+            shown += 1
+        if args.show and shown >= args.show:
+            break
+    # n_errors/n_warnings 는 발생 "횟수" 라 묶인 항목까지 센다. 여기서 세야 하는
+    # 것은 아직 출력하지 못한 "줄 수" 이므로 all_issues 길이를 기준으로 삼는다.
+    remaining = len(rep.all_issues) - shown
+    if args.show and remaining > 0:
+        print(f"  … 그 외 {remaining}건 (--show 0 으로 전체 출력)")
+    if rep.all_issues:
+        print("  코드별 집계: " + ", ".join(f"{k}={v}" for k, v in rep.counts_by_code().items()))
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            json.dump(rep.as_dict(), fh, ensure_ascii=False, indent=2)
+        print(f"  → {args.output} 에 상세 리포트 저장")
+
+    ok = rep.passed(strict=args.strict)
+    print(f"  판정: {'PASS' if ok else 'FAIL'}"
+          f"{' (--strict: WARN 도 불허)' if args.strict else ''}")
+    if not ok:
+        print("  이 데이터로는 백테스트 결과를 신뢰할 수 없습니다. "
+              "원본을 고치거나 다시 수집하세요.")
+    return 0 if ok else 1
+
+
 def cmd_schedule(args) -> int:
     """실전 자동매매 표준 크론잡 세트를 crontab 형식으로 출력.
     이 라인들을 `crontab -e` 로 등록하거나 systemd timer 로 변환해 쓴다."""
@@ -314,6 +376,26 @@ def main(argv: Optional[list] = None) -> int:
     p_val = sub.add_parser("validate")
     p_val.add_argument("--registry", required=True, help="레지스트리 JSON 경로")
     p_val.set_defaults(func=cmd_validate)
+
+    p_vd = sub.add_parser("validate-data",
+                          help="실데이터 무결성 검사 (백테스트 이전 관문)")
+    p_vd.add_argument("--symbol", action="append",
+                      help="검사할 종목 (반복 지정 가능). 미지정 시 유니버스 전체")
+    p_vd.add_argument("--min-bars", type=int, default=200,
+                      help="종목당 최소 봉 수 (미만이면 short_history 경고)")
+    p_vd.add_argument("--jump-pct", type=float, default=0.30,
+                      help="이 비율 이상 종가가 튀면 분할/오류로 지목 (기본 30%%)")
+    p_vd.add_argument("--long-gap-days", type=int, default=5,
+                      help="이 일수 이상 연속 결측이면 개별 지목")
+    p_vd.add_argument("--stale-days", type=int, default=5,
+                      help="마지막 봉이 이보다 오래되면 수집 정체로 판정")
+    p_vd.add_argument("--as-of", help="기준일 YYYY-MM-DD (기본 오늘)")
+    p_vd.add_argument("--show", type=int, default=40,
+                      help="출력할 최대 항목 수. 0 이면 전체")
+    p_vd.add_argument("--strict", action="store_true",
+                      help="WARN 이 하나라도 있으면 실패 처리")
+    p_vd.add_argument("--output", help="상세 리포트 JSON 저장 경로")
+    p_vd.set_defaults(func=cmd_validate_data)
 
     p_rec = sub.add_parser("reconcile", help="두 데이터 원천 대조로 누락 종목 감지")
     p_rec.add_argument("--primary", required=True, help="주 데이터 CSV 디렉터리 (예: KRX)")
