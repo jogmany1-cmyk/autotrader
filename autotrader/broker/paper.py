@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from ..config import Costs
+from ..exits import evaluate_exit
 from ..orders import BrokerOrder, ExecutionReport, OrderStatus
 from ..models import Fill, Order, Position, Side, Trade
 from ..portfolio import Portfolio
@@ -95,28 +96,14 @@ class PaperBroker(Broker):
             bar = bars.get(sym)
             if bar is None:
                 continue
-            exit_price: Optional[float] = None
-            reason = ""
-            hard_line = pos.avg_price * (1 - hard_stop_pct) if hard_stop_pct > 0 else 0.0
-            if hard_line and bar.low <= hard_line:
-                exit_price = min(hard_line, bar.open)
-                reason = "hard_stop"
-            elif pos.stop_price is not None and bar.low <= pos.stop_price:
-                exit_price = min(pos.stop_price, bar.open)
-                # 트레일링이 끌어올린 스탑과 전략이 정한 초기 손절은 성격이
-                # 다르다. 하나로 기록하면 무엇이 포지션을 끊었는지 알 수 없다.
-                # 쿨다운도 둘을 다르게 취급한다(trail 은 면제).
-                reason = "trail" if pos.stop_from_trail else "stop"
-            elif pos.take_price is not None and bar.high >= pos.take_price:
-                exit_price = max(pos.take_price, bar.open)
-                reason = "target"
-            elif max_hold is not None and pos.bars_held >= max_hold:
-                exit_price = bar.close
-                reason = "time"
-            if exit_price is None:
+            # 판정은 exits 모듈에 있다. 여기 안에만 두면 실브로커에서는
+            # 스탑이 아예 걸리지 않는다 — 실제로 그런 상태였다.
+            sig = evaluate_exit(pos, bar, max_hold=max_hold,
+                                hard_stop_pct=hard_stop_pct)
+            if sig is None:
                 continue
-            order = Order(symbol=sym, side=Side.SELL, qty=pos.qty, tag=reason)
-            trade = self._sell_at(order, exit_price, ts)
+            order = Order(symbol=sym, side=Side.SELL, qty=pos.qty, tag=sig.reason)
+            trade = self._sell_at(order, sig.price, ts)
             if trade:
                 closed.append(trade)
         # 트레일링은 청산 판정이 **끝난 뒤** 갱신한다.

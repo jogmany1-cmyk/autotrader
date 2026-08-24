@@ -89,13 +89,27 @@ class Portfolio:
         """
         for sym, pos in self.positions.items():
             price = prices.get(sym)
-            if price is None:
-                continue
-            if price > pos.highest_close:
-                pos.highest_close = price
-                # 포지션별 폭이 있으면 그것을 쓴다 (진입 시점 ATR 기반).
-                width = pos.trail_pct if pos.trail_pct is not None else trail_pct
-                trailing = pos.highest_close * (1 - width)
-                if pos.stop_price is None or trailing > pos.stop_price:
-                    pos.stop_price = trailing
-                    pos.stop_from_trail = True
+            if price is not None:
+                update_trailing_stop(pos, price, trail_pct)
+
+
+def update_trailing_stop(pos, price: float, trail_pct: float) -> bool:
+    """포지션 하나의 트레일링 스탑을 갱신한다. 올렸으면 True.
+
+    포트폴리오 밖으로 꺼내 둔 이유: 실계좌에는 페이퍼의 `mark()` 같은 경로가
+    없어서 스탑을 끌어올리는 주체가 아무도 없었다. 트레일링이 이름만 남는다.
+    두 경로가 같은 함수를 부르게 해야 갈라지지 않는다.
+    """
+    if price <= pos.highest_close:
+        return False
+    pos.highest_close = price
+    # 포지션별 폭이 있으면 그것을 쓴다 (진입 시점 ATR 기반).
+    width = pos.trail_pct if pos.trail_pct is not None else trail_pct
+    if width <= 0:
+        return False
+    trailing = pos.highest_close * (1 - width)
+    if pos.stop_price is None or trailing > pos.stop_price:
+        pos.stop_price = trailing
+        pos.stop_from_trail = True
+        return True
+    return False

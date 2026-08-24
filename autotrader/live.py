@@ -18,6 +18,10 @@ from .broker.base import Broker
 from .broker.paper import PaperBroker
 from . import indicators as ind
 from .config import Config
+from .exits import evaluate_exit_live
+from .orderbook import OrderBook
+from .orders import OrderStatus, entry_order_id, exit_order_id
+from .portfolio import update_trailing_stop
 from .cooldown import CooldownRegistry
 from .data.base import DataProvider
 from .market import is_trading_day, is_extended_market_open, reason_closed, session_of
@@ -59,7 +63,8 @@ class LiveTrader:
                  trail_pct: float = 0.05,
                  dry_run: bool = True,
                  registry: Optional[StrategyRegistry] = None,
-                 validated_only: bool = False):
+                 validated_only: bool = False,
+                 order_log: Optional[str] = None):
         self.provider = provider
         self.broker = broker
         self.config = config
@@ -93,6 +98,60 @@ class LiveTrader:
         self.notifier: Notifier = Notifier()
         # 하루에 한 번만 EOD 청산 실행 보장
         self._flat_done_for: Optional[str] = None
+        # 미결 주문 장부. 경로를 주면 재시작 후에도 살아남는다.
+        self.book = OrderBook(order_log)
+        # 주문 id 에 섞는 전략 식별자. 앙상블 구성이 바뀌면
+        # 같은 종목·같은 시각이라도 다른 주문으로 본다.
+        self.ensemble_name = "+".join(sorted(s_.name for s_ in self.strategies))
+
+    def _dispatch_real_exits(self, positions, now: datetime, report) -> int:
+        """실브로커: 청산 조건에 걸린 포지션에 매도 주문을 낸다.
+
+        페이퍼처럼 "판정 즉시 청산 완료" 가 아니다. 주문을 내는 것까지가 여기
+        할 일이고, 실제 청산은 체결통보가 와야 성립한다. 그래서 여기서는
+        risk/cooldown/tracker 를 건드리지 않는다 — 체결도 안 됐는데 손익을
+        기록하면 그것이 곧 유령 포지션이다.
+
+        브로커가 스탑 주문을 직접 받아 주면 그쪽이 낫다(우리 프로세스가 죽어도
+        살아 있다). 다만 지원 여부가 브로커마다 다르므로, 직접 감시해 청산
+        주문을 내는 이 경로는 항상 필요하다.
+        """
+        sent = 0
+        max_hold = self.config.execution.max_holding_bars
+        hard = self.config.risk.hard_stop_loss_pct
+        for sym, pos in list(positions.items()):
+            try:
+                price = self.provider.last_price(sym)
+            except Exception as exc:
+                # 시세를 못 받으면 청산 판정을 할 수 없다. 조용히 넘기면
+                # 스탑이 걸려야 할 포지션이 방치된다 — 반드시 남긴다.
+                report.details.append(f"[EXIT] {sym}: 시세 조회 실패 ({exc})")
+                continue
+            sig = evaluate_exit_live(pos, price, max_hold=max_hold,
+                                     hard_stop_pct=hard)
+            if sig is None:
+                continue
+            if self.dry_run:
+                report.details.append(
+                    f"[DRY][EXIT] SELL {sym} x{sig.qty} ({sig.reason}) @ {price:.0f}")
+                continue
+            order = Order(sym, Side.SELL, sig.qty, tag=sig.reason,
+                          client_order_id=exit_order_id(sym, sig.reason, now,
+                                                        pos.opened_at))
+            try:
+                bo = self.broker.submit(order, price_hint=price)
+            except Exception as exc:
+                report.details.append(f"[EXIT] {sym}: broker error {exc}")
+                continue
+            self.book.add(bo)
+            if bo.status is OrderStatus.REJECTED:
+                report.details.append(
+                    f"[EXIT] {sym}: 청산 주문 거부 ({bo.reject_reason})")
+                continue
+            sent += 1
+            report.details.append(
+                f"[EXIT] SELL {sym} x{sig.qty} ({sig.reason}) @ {price:.0f}")
+        return sent
 
     def _trail_for(self, bars, idx, price):
         """이 포지션에 쓸 트레일링 폭. `--trail 0` 이면 트레일링을 완전히 끈다.
@@ -199,7 +258,14 @@ class LiveTrader:
                 report.orders_rejected += 1
                 report.details.append(f"{cand.symbol}: {decision.reason}")
                 continue
-            order = Order(cand.symbol, Side.BUY, decision.qty, tag=dec.signal.reason[:32])
+            # 같은 신호로 두 번 주문이 나가지 않게 결정적 id 를 붙인다.
+            # 재시도·재시작·스트림 중복 어디에서 와도 같은 id 가 나온다.
+            coid = entry_order_id(self.ensemble_name, cand.symbol, now, Side.BUY)
+            if self.book.get(coid) is not None:
+                report.details.append(f"{cand.symbol}: 중복 주문 차단")
+                continue
+            order = Order(cand.symbol, Side.BUY, decision.qty,
+                          tag=dec.signal.reason[:32], client_order_id=coid)
             if self.dry_run:
                 report.details.append(f"[DRY] BUY {cand.symbol} x{decision.qty} @ {price:.2f}")
                 continue
@@ -207,12 +273,20 @@ class LiveTrader:
                 if isinstance(self.broker, PaperBroker):
                     # 백테스트와 같은 트레일 폭을 쓴다. 넘기지 않으면 계좌
                     # 기본값(고정 %)으로 돌아가 백테스트를 재현하지 못한다.
-                    self.broker.submit(
+                    bo = self.broker.submit(
                         order, price_hint=price, ts=now,
                         stop=dec.stop_hint, target=dec.target_hint,
                         trail=self._trail_for(bars, len(bars) - 1, price))
                 else:
-                    self.broker.submit(order, price_hint=price)
+                    bo = self.broker.submit(order, price_hint=price)
+                self.book.add(bo)
+                if bo.status is OrderStatus.REJECTED:
+                    # 거부는 예외가 아니라 상태다. 여기서 걸러내지 않으면
+                    # 거부된 주문이 보유 포지션으로 기록된다.
+                    report.orders_rejected += 1
+                    report.details.append(
+                        f"{cand.symbol}: 주문 거부 ({bo.reject_reason})")
+                    continue
                 report.orders_placed += 1
                 # 같은 사이클 안에서 즉시 반영한다. 이게 없으면 후보 10개가
                 # 전부 통과해 max_positions·gross_exposure·min_cash 가 한
@@ -237,8 +311,20 @@ class LiveTrader:
                 report.orders_rejected += 1
                 report.details.append(f"{cand.symbol}: broker error {exc}")
 
-        # 4. 보유 포지션의 청산 규칙 (페이퍼에서만 자동 처리; 실계좌는 스탑주문을
-        #    브로커 쪽에 등록해야 정확하다).
+        # 4. 보유 포지션의 청산 규칙.
+        #
+        #    예전에는 이 블록 전체가 PaperBroker 전용이었다. 실브로커로 돌리면
+        #    손절·트레일링·시간청산이 **하나도 동작하지 않았다** — 백테스트에서
+        #    검증한 것과 전혀 다른 것이 실계좌에서 돈다는 뜻이다. 판정은
+        #    exits 모듈이 하고, 집행 방식만 브로커별로 갈린다.
+        if not isinstance(self.broker, PaperBroker):
+            # 트레일링 스탑은 누군가 stop_price 를 끌어올려야 존재한다.
+            # 페이퍼는 mark() 안에서 하지만 실계좌에는 그 경로가 없었다.
+            if self.trail_pct > 0 and prices:
+                for sym, pos in positions.items():
+                    if sym in prices:
+                        update_trailing_stop(pos, prices[sym], self.trail_pct)
+            report.closed_trades += self._dispatch_real_exits(positions, now, report)
         if isinstance(self.broker, PaperBroker):
             bars_today: Dict[str, Bar] = {}
             for sym in positions.keys():

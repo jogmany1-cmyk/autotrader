@@ -16,6 +16,8 @@
 """
 from __future__ import annotations
 
+import hashlib
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -210,3 +212,34 @@ class BrokerOrder:
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
+
+
+def _key(*parts: object) -> str:
+    raw = "|".join(str(p) for p in parts)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def entry_order_id(strategy: str, symbol: str, signal_ts: datetime,
+                   side: Side) -> str:
+    """진입 주문의 결정적 식별자.
+
+    같은 신호는 몇 번을 다시 계산해도 같은 id 를 낸다. 그래서 재시도·재시작·
+    스트림 중복 어디에서 와도 장부가 "이미 낸 주문" 으로 알아본다.
+
+    `signal_ts` 를 분 단위로 자른다 — 같은 신호를 초 단위로 다르게 찍으면
+    id 가 달라져 중복 방지가 뚫린다. 사이클이 분보다 자주 돌면 이 정밀도를
+    올려야 한다.
+    """
+    return "e" + _key(strategy, symbol, side.value,
+                      signal_ts.strftime("%Y%m%d%H%M"))
+
+
+def exit_order_id(symbol: str, reason: str, at: datetime,
+                  opened_at: Optional[datetime] = None) -> str:
+    """청산 주문의 결정적 식별자.
+
+    포지션 진입 시각을 섞는다. 같은 종목을 팔았다 다시 사서 또 팔 때, 그
+    두 청산이 같은 id 를 갖지 않게 하기 위해서다.
+    """
+    return "x" + _key(symbol, reason, opened_at.isoformat() if opened_at else "",
+                      at.strftime("%Y%m%d%H%M"))
