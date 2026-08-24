@@ -185,6 +185,7 @@ def cmd_fetch(args) -> int:
         print(f"[ERROR] {exc}")
         return 2
 
+    provider.debug = args.debug
     symbols = args.symbol or provider.universe()
     kind = f"{args.minutes}m" if args.minutes else "daily"
     print(f"[FETCH] {len(symbols)}개 심볼 · {kind} → 캐시 {args.cache} "
@@ -423,6 +424,9 @@ def main(argv: Optional[list] = None) -> int:
                       help="분봉 간격(1/3/5/10/15/30/45/60). 0 이면 일봉 수집.")
     p_ft.add_argument("--real", action="store_true",
                       help="실전 서버 사용 (기본은 모의)")
+    p_ft.add_argument("--debug", action="store_true",
+                      help="응답 본문 일부를 출력 (벤더 필드 불일치 진단용). "
+                           "요청 헤더는 출력하지 않으므로 앱키는 노출되지 않음")
     p_ft.set_defaults(func=cmd_fetch)
 
     p_rj = sub.add_parser("run-job", help="스케줄러가 크론에서 호출하는 표준 잡 실행")

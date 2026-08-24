@@ -113,7 +113,7 @@ python -m autotrader backtest --threshold 0.45
 ```bash
 ./scripts/verify.sh            # everything at once — run this before pushing
 pip install pytest             # optional dep
-pytest -q                      # entire suite (currently ~140 tests)
+pytest -q                      # entire suite (currently ~155 tests)
 pytest tests/test_backtest.py  # one file
 pytest -q -k "cost_audit"      # keyword filter
 ```

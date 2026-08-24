@@ -76,6 +76,12 @@ class KiwoomProvider(DataProvider):
         # 직전 refresh_* 호출에서 실패한 (종목, 사유). 개수만으로는 무엇이
         # 잘못됐는지 알 수 없어 수집이 조용히 0건으로 끝나던 문제를 막는다.
         self.last_failures: List[Tuple[str, str]] = []
+        # 직전 응답의 진단 정보. 벤더 응답 형태가 문서와 다를 때 "시세 없음" 만
+        # 남기고 끝나면 원인을 알 수 없어서, 무엇이 돌아왔는지 함께 보고한다.
+        self.last_response_meta: Dict[str, object] = {}
+        # True 면 응답 본문 일부를 그대로 출력한다 (CLI --debug).
+        # 요청 헤더는 절대 찍지 않는다 — appkey/secret 이 들어 있다.
+        self.debug = False
         os.makedirs(cache_dir, exist_ok=True)
 
     # ------------------------------------------------------- 인증·HTTP
@@ -153,7 +159,7 @@ class KiwoomProvider(DataProvider):
         if fresh:
             self._save_cache(symbol, merged)
         if not merged:
-            raise DataError(f"{symbol}: 시세 없음")
+            raise DataError(f"{symbol}: 시세 없음 — {self._diag()}")
         return merged[-limit:] if limit else merged
 
     def last_price(self, symbol: str) -> float:
@@ -192,19 +198,12 @@ class KiwoomProvider(DataProvider):
                 timeout=15,
             )
             if r.status_code != 200:
-                raise DataError(f"Kiwoom 분봉 실패({symbol}, {interval}m): {r.status_code}")
-            js = r.json()
-            for row in js.get("stk_min_pole_chart_qry", []) or js.get("list", []):
+                raise DataError(f"Kiwoom 분봉 실패({symbol}, {interval}m): "
+                                f"HTTP {r.status_code} {r.text[:200]}")
+            js = self._inspect(r, symbol, "ka10080")
+            for row in self._rows(js):
                 try:
-                    ts = datetime.strptime(str(row.get("cntr_tm")), "%Y%m%d%H%M%S")
-                    out.append(Bar(
-                        ts=ts,
-                        open=float(row.get("open_pric", 0)),
-                        high=float(row.get("high_pric", 0)),
-                        low=float(row.get("low_pric", 0)),
-                        close=float(row.get("cur_prc", 0)),
-                        volume=float(row.get("trde_qty", 0)),
-                    ))
+                    out.append(self._bar_from_row(row))
                 except (ValueError, TypeError):
                     continue
             cont_yn = r.headers.get("cont-yn", "N")
@@ -262,19 +261,12 @@ class KiwoomProvider(DataProvider):
                 timeout=15,
             )
             if r.status_code != 200:
-                raise DataError(f"Kiwoom 일봉 실패({symbol}): {r.status_code}")
-            js = r.json()
-            for row in js.get("stk_dt_pole_chart_qry", []) or js.get("list", []):
+                raise DataError(
+                    f"Kiwoom 일봉 실패({symbol}): HTTP {r.status_code} {r.text[:200]}")
+            js = self._inspect(r, symbol, "ka10081")
+            for row in self._rows(js):
                 try:
-                    ts = datetime.strptime(str(row.get("dt")), "%Y%m%d")
-                    out.append(Bar(
-                        ts=ts,
-                        open=float(row.get("open_pric", 0)),
-                        high=float(row.get("high_pric", 0)),
-                        low=float(row.get("low_pric", 0)),
-                        close=float(row.get("cur_prc", 0)),
-                        volume=float(row.get("trde_qty", 0)),
-                    ))
+                    out.append(self._bar_from_row(row))
                 except (ValueError, TypeError):
                     continue
             # 페이지네이션 (연속조회) — 헤더에 cont-yn=Y 이면 다음 next-key 로 이어 받음.
@@ -287,6 +279,133 @@ class KiwoomProvider(DataProvider):
                 break
         out.sort(key=lambda b: b.ts)
         return out
+
+    _DATE_FORMATS = ("%Y%m%d", "%Y%m%d%H%M%S", "%Y-%m-%d", "%Y%m%d%H%M")
+
+    def _bar_from_row(self, row: Dict) -> Bar:
+        """한 행을 Bar 로. 필드 이름·부호·날짜형식 차이를 흡수한다."""
+        raw_dt = str(self._pick(row, "date") or "").strip()
+        ts = None
+        for fmt in self._DATE_FORMATS:
+            try:
+                ts = datetime.strptime(raw_dt, fmt)
+                break
+            except ValueError:
+                continue
+        if ts is None:
+            raise ValueError(f"날짜 형식을 알 수 없음: {raw_dt!r}")
+        close = self._to_price(self._pick(row, "close"))
+        # 시/고/저가 빠진 응답이면 종가로 메운다 (분봉 일부 응답에서 발생).
+        def _or_close(field):
+            try:
+                return self._to_price(self._pick(row, field))
+            except (ValueError, TypeError):
+                return close
+        volume_raw = self._pick(row, "volume")
+        return Bar(
+            ts=ts,
+            open=_or_close("open"),
+            high=_or_close("high"),
+            low=_or_close("low"),
+            close=close,
+            volume=abs(float(str(volume_raw).replace(",", "").lstrip("+")))
+                   if volume_raw not in (None, "") else 0.0,
+        )
+
+    # 봉 배열 키 후보. 벤더 문서 기준이지만 여기에만 의존하지 않는다.
+    _ROW_KEYS = ("stk_dt_pole_chart_qry", "stk_min_pole_chart_qry",
+                 "stk_stk_pole_chart_qry", "list", "output", "output1", "output2")
+
+    # 한 행 안의 필드 별칭. 벤더가 이름을 바꿔도 한 곳만 고치면 되도록 모아둔다.
+    _FIELD_ALIASES = {
+        "date": ("dt", "stck_bsop_date", "base_dt", "cntr_tm", "trde_dt"),
+        "open": ("open_pric", "opn_prc", "stck_oprc", "open"),
+        "high": ("high_pric", "hgh_prc", "stck_hgpr", "high"),
+        "low": ("low_pric", "low_prc", "stck_lwpr", "low"),
+        "close": ("cur_prc", "clos_pric", "stck_clpr", "close", "prpr"),
+        "volume": ("trde_qty", "acml_vol", "cntg_vol", "volume"),
+    }
+
+    def _rows(self, js) -> List[Dict]:
+        """응답에서 봉 배열을 찾아낸다.
+
+        이전 구현은 배열 키 이름을 코드에 못박아 두고 `js.get(그 이름, [])` 로
+        읽었다. 실제 응답의 키가 다르면 조용히 0건이 되어 "시세 없음" 으로
+        끝났다 — 사용자의 첫 실전 호출이 정확히 그렇게 실패했다.
+
+        이름을 맞히려 하지 말고 찾는다: 알려진 후보를 먼저 보고, 없으면
+        사전(dict)을 담은 첫 번째 리스트를 봉 배열로 간주한다.
+        """
+        if not isinstance(js, dict):
+            return []
+        for key in self._ROW_KEYS:
+            v = js.get(key)
+            if isinstance(v, list) and v and isinstance(v[0], dict):
+                return v
+        for v in js.values():
+            if isinstance(v, list) and v and isinstance(v[0], dict):
+                return v
+        return []
+
+    @classmethod
+    def _pick(cls, row: Dict, field: str):
+        for name in cls._FIELD_ALIASES[field]:
+            if name in row and row[name] not in (None, ""):
+                return row[name]
+        return None
+
+    @classmethod
+    def _to_price(cls, raw) -> float:
+        """키움은 부호가 붙은 문자열('+73400', '-1200')로 가격을 주기도 한다."""
+        if raw is None:
+            raise ValueError("빈 값")
+        return abs(float(str(raw).replace(",", "").strip().lstrip("+")))
+
+    # ---------------------------------------------------- 응답 진단
+    # 키움은 HTTP 200 으로 응답하면서 본문에 오류 코드를 담는다. 이것을 보지
+    # 않으면 "권한 없음" 같은 업무 오류가 그냥 빈 데이터로 보여 "시세 없음"
+    # 으로 둔갑한다. 실제로 그 일이 일어나 원인 파악에 시간을 썼다.
+    _RC_KEYS = ("return_code", "rt_cd", "returnCode")
+    _MSG_KEYS = ("return_msg", "msg1", "returnMsg", "msg")
+
+    def _inspect(self, response, symbol: str, api_id: str) -> Dict:
+        """응답 JSON 을 돌려주되, 벤더 오류 코드를 먼저 걸러낸다."""
+        js = response.json()
+        meta = {
+            "status": response.status_code,
+            "api_id": api_id,
+            "symbol": symbol,
+            "keys": sorted(js.keys())[:12] if isinstance(js, dict) else type(js).__name__,
+        }
+        if isinstance(js, dict):
+            for k in self._RC_KEYS:
+                if k in js:
+                    meta["return_code"] = js[k]
+                    break
+            for k in self._MSG_KEYS:
+                if k in js:
+                    meta["return_msg"] = js[k]
+                    break
+        self.last_response_meta = meta
+        if self.debug:
+            body = response.text
+            print(f"  [DEBUG] {api_id} {symbol} status={response.status_code} "
+                  f"keys={meta['keys']}")
+            print(f"  [DEBUG] body[:800]={body[:800]}")
+        rc = meta.get("return_code")
+        if rc is not None and str(rc) not in ("0", "None"):
+            raise DataError(
+                f"{symbol}: 키움이 오류를 반환했습니다 "
+                f"({api_id} return_code={rc}: {meta.get('return_msg', '메시지 없음')})")
+        return js
+
+    def _diag(self) -> str:
+        """마지막 응답이 어떻게 생겼는지 한 줄 요약 — 오류 메시지에 붙인다."""
+        m = self.last_response_meta
+        if not m:
+            return "응답 정보 없음"
+        return (f"HTTP {m.get('status')} · 응답 최상위 키={m.get('keys')}"
+                + (f" · return_msg={m.get('return_msg')}" if m.get("return_msg") else ""))
 
     # -------------------------------------------------------- 캐시 IO
     def _cache_path(self, symbol: str) -> str:
