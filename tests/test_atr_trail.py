@@ -13,7 +13,7 @@ from datetime import datetime
 
 import pytest
 
-from autotrader.backtest import _atr_trail
+from autotrader.indicators import atr_trail_pct as _atr_trail
 from autotrader.broker import PaperBroker
 from autotrader.config import Config, Costs, ExecutionCfg
 from autotrader.models import Bar, Order, Side
@@ -55,12 +55,12 @@ def test_returns_none_when_history_is_too_short():
 def test_atr_uses_only_bars_up_to_the_decision(monkeypatch):
     """미래 정보 금지 — 판단 봉 이후를 보면 안 된다."""
     seen = {}
-    import autotrader.backtest as bt
+    import autotrader.indicators as m
 
     def spy(window, period):
         seen["n"] = len(window)
         return [2.0]
-    monkeypatch.setattr(bt.ind, "atr", spy)
+    monkeypatch.setattr(m, "atr", spy)
     _atr_trail(_bars(n=100), 30, 100.0, ExecutionCfg())
     assert seen["n"] == 31, "bars[:idx+1] 만 넘겨야 한다"
 

@@ -74,15 +74,32 @@ class HorizonEdge:
         return self.signal_mean - self.baseline_mean
 
     @property
+    def effective_n(self) -> float:
+        """중첩을 보정한 유효 표본 수.
+
+        h일 수익률을 매 봉마다 재면 이웃한 표본이 h-1 일을 공유한다. 서로
+        독립이 아니므로 n 을 그대로 쓰면 표준오차가 과소평가되고 t 가 부풀려진다.
+        겹치는 만큼 나눠 유효 표본으로 본다 (보수적인 관례적 보정).
+
+        이 보정이 없던 판에서는 10일 지평선 t 가 실제의 약 √10 배로 나왔다.
+        """
+        return max(self.n_signals / max(self.horizon, 1), 1.0)
+
+    @property
     def t_stat(self) -> float:
-        """우위 / 표준오차. 표본이 작으면 우위가 커도 t 는 작다."""
+        """우위 / 표준오차. **부호를 유지한다** — 음수면 기준선보다 나쁘다는 뜻.
+
+        표본이 작거나 중첩이 심하면 우위가 커 보여도 t 는 작다.
+        """
         if self.n_signals < 2 or self.signal_std <= 0:
             return 0.0
-        return self.edge / (self.signal_std / math.sqrt(self.n_signals))
+        return self.edge / (self.signal_std / math.sqrt(self.effective_n))
 
     @property
     def verdict(self) -> str:
-        t = abs(self.t_stat)
+        t = self.t_stat          # abs 를 쓰면 기준선보다 나쁜 신호도 "유의" 가 된다
+        if t <= -T_WEAK:
+            return "역효과"      # 신호가 기준선보다 나쁘다
         if t >= T_SIGNIFICANT:
             return "유의"
         if t >= T_WEAK:
@@ -96,6 +113,7 @@ class HorizonEdge:
 
     def as_dict(self) -> Dict:
         return {"horizon": self.horizon, "n_signals": self.n_signals,
+                "effective_n": self.effective_n,
                 "n_baseline": self.n_baseline, "signal_mean": self.signal_mean,
                 "baseline_mean": self.baseline_mean, "edge": self.edge,
                 "t_stat": self.t_stat, "verdict": self.verdict,
@@ -133,7 +151,18 @@ class EdgeReport:
         return None
 
     def best_t(self) -> float:
+        """가장 큰 t. **게이트 판정에 쓰면 안 된다** — 지평선 4개 중 최대값을
+        고르는 것은 다중비교라, 전부 잡음이어도 하나는 커 보인다. 요약 표시용."""
         return max((e.t_stat for e in self.horizons), default=0.0)
+
+    def gate_t(self, horizon: Optional[int] = None) -> float:
+        """게이트용 t. 지평선을 하나 정해 그것만 본다 (기본: 가장 긴 지평선)."""
+        if not self.horizons:
+            return 0.0
+        if horizon is not None:
+            e = self.horizon(horizon)
+            return e.t_stat if e else 0.0
+        return self.horizons[-1].t_stat
 
     def summary(self) -> str:
         return (f"봉 {self.n_bars:,}개 · 신호 {self.n_signals:,}건 "

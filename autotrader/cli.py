@@ -351,9 +351,13 @@ def cmd_edge(args) -> int:
         print(f"\n  → {args.output} 에 저장")
 
     if args.min_t is not None:
-        ok = rep.best_t() >= args.min_t
+        # 지평선 4개 중 최대값으로 판정하면 전부 잡음이어도 하나는 커 보인다.
+        # 게이트는 지평선을 하나 정해 그것만 본다.
+        t = rep.gate_t(args.gate_horizon)
+        h = args.gate_horizon or (rep.horizons[-1].horizon if rep.horizons else 0)
+        ok = t >= args.min_t
         print(f"\n  판정: {'PASS' if ok else 'FAIL'} "
-              f"(최대 t={rep.best_t():.2f}, 기준 {args.min_t})")
+              f"({h}일 t={t:.2f}, 기준 {args.min_t})")
         return 0 if ok else 1
     return 0
 
@@ -486,6 +490,8 @@ def main(argv: Optional[list] = None) -> int:
                       help="측정할 보유일수, 쉼표 구분 (기본 1,5,10,20)")
     p_ed.add_argument("--warmup", type=int, default=250,
                       help="지표 워밍업에 쓸 앞부분 봉 수 (기본 250)")
+    p_ed.add_argument("--gate-horizon", type=int, default=None,
+                      help="--min-t 판정에 쓸 지평선(일). 미지정 시 가장 긴 것")
     p_ed.add_argument("--min-t", type=float, default=None,
                       help="이 t값 미만이면 종료코드 1. 지정 시 게이트로 동작")
     p_ed.add_argument("--output", help="결과 JSON 저장 경로")

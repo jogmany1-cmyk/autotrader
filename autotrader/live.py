@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Sequence
 
 from .broker.base import Broker
 from .broker.paper import PaperBroker
+from . import indicators as ind
 from .config import Config
 from .cooldown import CooldownRegistry
 from .data.base import DataProvider
@@ -188,8 +189,13 @@ class LiveTrader:
                 continue
             try:
                 if isinstance(self.broker, PaperBroker):
-                    self.broker.submit(order, price_hint=price, ts=now,
-                                       stop=dec.stop_hint, target=dec.target_hint)
+                    # 백테스트와 같은 트레일 폭을 쓴다. 넘기지 않으면 계좌
+                    # 기본값(고정 %)으로 돌아가 백테스트를 재현하지 못한다.
+                    self.broker.submit(
+                        order, price_hint=price, ts=now,
+                        stop=dec.stop_hint, target=dec.target_hint,
+                        trail=ind.atr_trail_pct(bars, len(bars) - 1, price,
+                                                self.config.execution))
                 else:
                     self.broker.submit(order, price_hint=price)
                 report.orders_placed += 1
@@ -219,7 +225,8 @@ class LiveTrader:
             report.closed_trades = len(closed)
             for tr in closed:
                 self.risk.register_exit(tr.pnl, now.date())
-                self.cooldown.register_exit(tr.symbol, tr.exit_reason, now.date())
+                self.cooldown.register_exit(tr.symbol, tr.exit_reason, now.date(),
+                                            pnl=tr.pnl)
                 self.tracker.record_exit(
                     symbol=tr.symbol, exit_ts=tr.exit_ts,
                     exit_price=tr.exit_price, exit_reason=tr.exit_reason,

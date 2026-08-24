@@ -258,3 +258,31 @@ def roc_at(ctx, period: int) -> Num:
 def closes_at(ctx) -> List[float]:
     """종가 리스트도 매번 새로 만들면 O(n²) 이므로 함께 캐시한다."""
     return _cached(ctx, ("closes",), lambda: closes(ctx.bars))
+
+
+def atr_trail_pct(bars: Sequence[Bar], idx: Optional[int], price: float,
+                  execution) -> Optional[float]:
+    """진입 시점 ATR 로 이 포지션의 트레일링 폭(비율)을 정한다.
+
+    고정 %는 종목별 변동성을 무시해서, 변동성이 큰 종목은 정상적인 흔들림에도
+    잘려나간다. 배수(`trail_atr_mult`)의 유도는 `config.ExecutionCfg` 주석 참고.
+
+    `idx` 는 **판단이 내려진 봉**의 인덱스다. 체결 봉을 넘기면 그날 고·저·종가가
+    ATR 에 들어가 미래 정보가 된다 — 백테스터는 다음 봉 시가에 체결하므로
+    체결 인덱스에서 1 을 빼서 넘긴다.
+
+    백테스트와 실매매가 같은 값을 쓰도록 여기 한 곳에 둔다. 둘이 갈라지면
+    "백테스트에서 검증하고 페이퍼로 재현한다" 는 승격 경로가 성립하지 않는다.
+    """
+    mult = getattr(execution, "trail_atr_mult", 0.0)
+    if not mult or idx is None or idx < 0 or price <= 0:
+        return None
+    window = bars[:idx + 1]
+    period = getattr(execution, "trail_atr_period", 14)
+    if len(window) < period + 1:
+        return None
+    series = atr(window, period)
+    val = series[-1] if series else None
+    if not val or val <= 0:
+        return None
+    return (mult * val) / price

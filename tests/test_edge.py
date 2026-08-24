@@ -121,9 +121,50 @@ def test_zero_variance_does_not_divide_by_zero():
 
 
 def test_verdict_thresholds():
-    assert HorizonEdge(5, 100, 100, 0.03, 0.0, .5, .5, 0.1).verdict == "유의"
-    assert HorizonEdge(5, 100, 100, 0.012, 0.0, .5, .5, 0.1).verdict == "약함"
-    assert HorizonEdge(5, 100, 100, 0.001, 0.0, .5, .5, 0.1).verdict == "우연과 구분 불가"
+    # n=500, horizon=5 → 유효 표본 100, 표준오차 0.1/10 = 0.01
+    assert HorizonEdge(5, 500, 100, 0.03, 0.0, .5, .5, 0.1).verdict == "유의"
+    assert HorizonEdge(5, 500, 100, 0.012, 0.0, .5, .5, 0.1).verdict == "약함"
+    assert HorizonEdge(5, 500, 100, 0.001, 0.0, .5, .5, 0.1).verdict == "우연과 구분 불가"
+
+
+def test_negative_edge_is_called_out_not_praised():
+    """신호가 기준선보다 나쁘면 '유의' 가 아니라 '역효과' 여야 한다.
+
+    abs(t) 를 쓰던 판에서는 t=-1.39 가 "약함" 으로 찍혔다 — 우위가 없는 정도가
+    아니라 반대로 작동하는데도 긍정으로 읽힌다.
+    """
+    e = HorizonEdge(5, 500, 100, -0.03, 0.0, .3, .5, 0.1)
+    assert e.t_stat < 0
+    assert e.verdict == "역효과"
+
+
+def test_overlapping_windows_shrink_the_effective_sample():
+    """h일 수익률을 매 봉마다 재면 이웃 표본이 h-1 일을 공유한다.
+
+    보정이 없으면 10일 지평선 t 가 실제의 약 √10 배로 나온다.
+    """
+    e = HorizonEdge(10, 250, 100, 0.02, 0.0, .5, .5, 0.1)
+    assert e.effective_n == pytest.approx(25.0)
+    naive = 0.02 / (0.1 / math.sqrt(250))
+    assert abs(e.t_stat) < abs(naive)
+    assert abs(e.t_stat) == pytest.approx(abs(naive) / math.sqrt(10), rel=1e-9)
+
+
+def test_effective_n_never_drops_below_one():
+    e = HorizonEdge(20, 3, 100, 0.02, 0.0, .5, .5, 0.1)
+    assert e.effective_n == 1.0
+
+
+def test_gate_uses_one_horizon_not_the_maximum():
+    """지평선 4개 중 최대값으로 판정하면 전부 잡음이어도 하나는 커 보인다."""
+    from autotrader.edge import EdgeReport
+    rep = EdgeReport(n_bars=1000, n_signals=500, threshold=0.5)
+    rep.horizons = [
+        HorizonEdge(1, 500, 100, 0.03, 0.0, .5, .5, 0.1),    # t 큼
+        HorizonEdge(20, 500, 100, 0.001, 0.0, .5, .5, 0.1),  # t 작음
+    ]
+    assert rep.best_t() > rep.gate_t()          # 기본은 가장 긴 지평선
+    assert rep.gate_t(1) > rep.gate_t(20)
 
 
 # ---- 점수 구간 · 역행 ----------------------------------------------------
