@@ -8,6 +8,25 @@ This repo is a standalone Python trading system (스크리닝 → 전략 앙상�
 
 All commands below run from the **repo root** (there is no longer an `autotrader/` prefix on the path — the Python package itself is at `autotrader/` inside this repo, i.e. `./autotrader/autotrader/`).
 
+## Target environment
+
+The user runs **Windows**. Give Windows-first instructions: PowerShell (not
+bash), `python` (not `python3`), `$env:VAR='...'` for environment variables,
+`\` in paths, and Task Scheduler rather than cron.
+
+The runtime code itself is Windows-clean — verified, not assumed: no POSIX-only
+imports, no hardcoded POSIX paths, `os.path.join` throughout, every `open()`
+names its encoding (so Windows' cp949 default never mangles Korean), and the CSV
+writers pass `newline=""` so no blank rows creep in. `python -m autotrader ...`
+runs as-is.
+
+Two things do NOT work on Windows:
+
+- `scripts/verify.sh` is bash — it needs Git Bash (bundled with Git for
+  Windows), not PowerShell.
+- `autotrader schedule` emits 5-field crontab lines. Task Scheduler cannot
+  consume them; the jobs must be registered separately (`schtasks` or the GUI).
+
 ## Branch policy
 
 Develop on `main`. This repo has no other special branch — unlike the old combined repo, there's no diary content to keep separate from.
