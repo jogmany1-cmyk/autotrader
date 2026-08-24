@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from typing import Optional
 
@@ -190,6 +191,11 @@ def cmd_fetch(args) -> int:
     if args.min_interval is not None:   # 미지정이면 모드별 기본값을 그대로 둔다
         provider.min_interval = args.min_interval
     symbols = args.symbol or provider.universe()
+    if not symbols:
+        # 유니버스가 비었는데 종료코드 0 을 주면, 크론은 "수집 성공" 으로 보고
+        # 다음 단계(백테스트)가 빈 캐시로 돌아간다. 조용한 성공이 가장 나쁘다.
+        print("[ERROR] 수집할 종목이 없습니다 (--symbol 을 주거나 유니버스를 확인하세요)")
+        return 2
     kind = f"{args.minutes}m" if args.minutes else "daily"
     print(f"[FETCH] {len(symbols)}개 심볼 · {kind} → 캐시 {args.cache} "
           f"(mode={'real' if args.real else 'paper'})")
@@ -203,6 +209,8 @@ def cmd_fetch(args) -> int:
         print(f"  [FAIL] {sym}: {reason}")
     if len(provider.last_failures) > 20:
         print(f"  … 그 외 {len(provider.last_failures) - 20}건")
+    if ok == 0:
+        return 2      # 전부 실패했는데 fail 만 세고 0 을 주면 안 된다
     return 0 if fail == 0 else 1
 
 
@@ -261,7 +269,13 @@ def cmd_validate_data(args) -> int:
         rep = checker.check_provider(provider, args.symbol, limit=args.bars)
         source = "합성 데이터 (실데이터 검증에는 --csv 를 쓰세요)"
     if not rep.symbols and not rep.unreadable:
-        print(f"[ERROR] 검사할 종목이 없습니다: {source}")
+        # 폴더 자체가 없는 경우와 CSV 만 없는 경우를 구분한다. 전자를
+        # "종목이 없습니다" 로 끝내면 --csv 경로 오타를 데이터 문제로 착각한다.
+        if args.csv and not os.path.isdir(args.csv):
+            print(f"[ERROR] 폴더가 없습니다: {args.csv}")
+        else:
+            print(f"[ERROR] 검사할 CSV 가 없습니다: {source} "
+                  "(`{종목}.csv` 형식의 파일이 필요합니다)")
         return 2
 
     print(f"== 데이터 무결성 검사 ({source}, 기준일 {rep.as_of}) ==")

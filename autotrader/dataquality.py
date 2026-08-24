@@ -31,6 +31,7 @@ CLAUDE.md 승격 경로 2단계("데이터 무결성")를 코드 게이트로 �
 from __future__ import annotations
 
 import csv
+import re
 import os
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -38,6 +39,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from .data.base import DataError, DataProvider
 from .market import KRX_HOLIDAYS, is_trading_day
+from .market import now_kst
 from .models import Bar
 
 ERROR = "ERROR"
@@ -187,7 +189,9 @@ class DataQualityChecker:
     def __init__(self, limits: Optional[QualityLimits] = None,
                  as_of: Optional[date] = None):
         self.limits = limits or QualityLimits()
-        self.as_of = as_of or date.today()
+        # 컨테이너·서버는 대개 UTC 라, KST 로 밤 9시 이후면 date.today() 가
+        # 어제를 준다. 그러면 오늘 수집한 봉이 'future_bar' ERROR 가 된다.
+        self.as_of = as_of or now_kst().date()
 
     # ---- 공개 API ------------------------------------------------------
 
@@ -224,6 +228,12 @@ class DataQualityChecker:
             except DataError as exc:
                 rep.unreadable.append((sym, str(exc)))
                 continue
+            except (OSError, UnicodeDecodeError, ValueError) as exc:
+                # cp949 로 저장된 CSV 하나가 UnicodeDecodeError 를 던지면
+                # DataError 만 잡던 판에서는 명령 전체가 죽었다. 나머지 99개
+                # 종목의 검사 결과까지 함께 사라진다 — 게이트가 게이트를 못 한다.
+                rep.unreadable.append((sym, f"{type(exc).__name__}: {exc}"))
+                continue
             rep.symbols.append(self.check_bars(sym, bars))
         return rep
 
@@ -239,6 +249,12 @@ class DataQualityChecker:
         from .data.csv_provider import CsvProvider
 
         provider = CsvProvider(directory)
+        if symbols is None:
+            # `{종목}_5m.csv` 같은 분봉 캐시가 같은 폴더에 있으면 universe() 가
+            # 이것도 종목으로 집어온다. 하루에 여러 봉이 있으니 duplicate_date
+            # ERROR 가 무더기로 나고, 멀쩡한 일봉 데이터가 FAIL 로 찍힌다.
+            # 분봉을 검사하려면 --symbol 로 이름을 직접 준다.
+            symbols = [s for s in provider.universe() if not _MINUTE_FILE.match(s)]
         rep = self.check_provider(provider, symbols, limit=limit)
         if limit:
             # 구간을 잘라 검사할 때는 원본 행 수 대조를 하지 않는다. 파일에는
@@ -435,6 +451,9 @@ def _trading_days_between(start: date, end: date) -> int:
     return n
 
 
+_MINUTE_FILE = re.compile(r".+_\d+m$")
+
+
 def _count_raw_rows(path: str) -> Optional[int]:
     """헤더를 뺀 비어 있지 않은 데이터 행 수. 읽을 수 없으면 None."""
     if not os.path.exists(path):
@@ -447,5 +466,5 @@ def _count_raw_rows(path: str) -> Optional[int]:
             except StopIteration:
                 return 0
             return sum(1 for row in reader if any(cell.strip() for cell in row))
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None

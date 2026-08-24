@@ -72,6 +72,17 @@ class Backtester:
         ]
 
     # ------------------------------------------------------------------ run
+    def _trail_for(self, bars, idx, price):
+        """이 포지션에 쓸 트레일링 폭. `--trail 0` 이면 트레일링을 완전히 끈다.
+
+        ATR 트레일은 별도 설정(`trail_atr_mult`)이라, 이 분기가 없으면
+        `--trail 0` 을 줘도 종목별 ATR 폭이 그대로 붙는다 — 끄려고 준 옵션이
+        안 꺼지는 것이라 실험 결과를 잘못 읽게 된다.
+        """
+        if not self.trail_pct:
+            return None
+        return ind.atr_trail_pct(bars, idx, price, self.config.execution)
+
     def run(self, symbols: Optional[Sequence[str]] = None) -> BacktestReport:
         u = self.config.universe
         symbols = list(symbols) if symbols else (u.symbols or self.provider.universe())
@@ -162,8 +173,7 @@ class Backtester:
                     broker.submit(
                         Order(sym, Side.BUY, decision.qty, tag=tag),
                         price_hint=price, ts=ts, stop=stop, target=target,
-                        trail=ind.atr_trail_pct(sym_bars, sym_idx - 1, price,
-                                                self.config.execution),
+                        trail=self._trail_for(sym_bars, sym_idx - 1, price),
                     )
                     risk.register_entry()
                     tracker.record_entry(Prediction(

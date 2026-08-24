@@ -94,6 +94,17 @@ class LiveTrader:
         # 하루에 한 번만 EOD 청산 실행 보장
         self._flat_done_for: Optional[str] = None
 
+    def _trail_for(self, bars, idx, price):
+        """이 포지션에 쓸 트레일링 폭. `--trail 0` 이면 트레일링을 완전히 끈다.
+
+        ATR 트레일은 별도 설정(`trail_atr_mult`)이라, 이 분기가 없으면
+        `--trail 0` 을 줘도 종목별 ATR 폭이 그대로 붙는다 — 끄려고 준 옵션이
+        안 꺼지는 것이라 실험 결과를 잘못 읽게 된다.
+        """
+        if not self.trail_pct:
+            return None
+        return ind.atr_trail_pct(bars, idx, price, self.config.execution)
+
     def cycle(self, now: Optional[datetime] = None) -> CycleReport:
         now = now or now_kst()
         report = CycleReport(ts=now, candidates=0, signals=0,
@@ -129,6 +140,10 @@ class LiveTrader:
                 report.flat_closed = len(closed)
                 for tr in closed:
                     self.risk.register_exit(tr.pnl, now.date())
+                    # 일괄 청산도 청산이다. 여기서 쿨다운을 안 걸면, 손실로
+                    # 강제 정리한 종목에 다음 날 아침 바로 되들어간다.
+                    self.cooldown.register_exit(tr.symbol, tr.exit_reason,
+                                                now.date(), pnl=tr.pnl)
                     self.tracker.record_exit(
                         symbol=tr.symbol, exit_ts=tr.exit_ts,
                         exit_price=tr.exit_price, exit_reason=tr.exit_reason,
@@ -194,8 +209,7 @@ class LiveTrader:
                     self.broker.submit(
                         order, price_hint=price, ts=now,
                         stop=dec.stop_hint, target=dec.target_hint,
-                        trail=ind.atr_trail_pct(bars, len(bars) - 1, price,
-                                                self.config.execution))
+                        trail=self._trail_for(bars, len(bars) - 1, price))
                 else:
                     self.broker.submit(order, price_hint=price)
                 report.orders_placed += 1

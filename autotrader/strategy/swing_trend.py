@@ -25,15 +25,13 @@ class SwingTrend(Strategy):
         gr = self._guard(ctx)
         if gr:
             return gr
-        bars = list(ctx.bars[: ctx.at + 1])
-        closes = ind.closes_at(ctx)
+        cur = ctx.bars[ctx.at]
         ma_f = ind.sma_at(ctx, self.fast)
         ma_s = ind.sma_at(ctx, self.slow)
         atr_val = ind.atr_at(ctx, self.atr_p)
-        # 기간은 ctx.at 로 정한다. closes 를 전체 시리즈로 바꾼 뒤
-        # len(closes) 를 쓰면 미래 봉까지 세어 지평선이 달라진다.
+        # 기간은 ctx.at 로 정한다. 전체 시리즈 길이를 쓰면 미래 봉까지 세어
+        # 지평선이 달라진다 (PITFALLS #24 에서 실제로 당한 함정).
         r120 = ind.roc_at(ctx, min(120, ctx.at))
-        cur = bars[-1]
         if None in (ma_f, ma_s, atr_val, r120) or atr_val <= 0:
             return StrategyResult.hold("nan")
         if not (ma_f > ma_s and cur.close > ma_f and r120 >= self.min_roc_120):

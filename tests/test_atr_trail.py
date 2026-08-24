@@ -86,3 +86,59 @@ def test_account_default_used_when_position_has_no_width():
                         close=120, volume=1.0)}, datetime(2026, 1, 5),
             trail_pct=0.05)
     assert br.positions()["AAA"].stop_price == pytest.approx(114.0)
+
+
+# ---- --trail 0 은 트레일링을 정말로 꺼야 한다 ------------------------
+
+def _flat_bars(n=60, price=100.0):
+    from datetime import datetime, timedelta
+    from autotrader.models import Bar
+    out = []
+    for i in range(n):
+        ts = datetime(2024, 1, 1) + timedelta(days=i)
+        out.append(Bar(ts, price, price * 1.03, price * 0.97, price, 10_000))
+    return out
+
+
+def test_trail_zero_disables_atr_trail_too():
+    """`--trail 0` 은 '트레일링 끄기' 로 읽힌다. ATR 트레일만 살아남으면 안 된다.
+
+    끄려고 준 옵션이 안 꺼지면 A/B 실험 결과를 통째로 잘못 읽는다.
+    """
+    from autotrader.backtest import Backtester
+    from autotrader.config import Config
+    from autotrader.data.synthetic import SyntheticProvider
+
+    bars = _flat_bars()
+    off = Backtester(SyntheticProvider(), Config(), trail_pct=0.0)
+    on = Backtester(SyntheticProvider(), Config(), trail_pct=0.05)
+    assert off._trail_for(bars, len(bars) - 1, 100.0) is None
+    assert on._trail_for(bars, len(bars) - 1, 100.0) is not None
+
+
+def test_live_and_backtest_use_the_same_trail_width():
+    """백테스트와 페이퍼가 다른 폭을 쓰면 '백테스트 재현' 이 성립하지 않는다."""
+    from autotrader.backtest import Backtester
+    from autotrader.broker.paper import PaperBroker
+    from autotrader.config import Config
+    from autotrader.data.synthetic import SyntheticProvider
+    from autotrader.live import LiveTrader
+
+    bars = _flat_bars()
+    cfg = Config()
+    bt = Backtester(SyntheticProvider(), cfg, trail_pct=0.05)
+    lt = LiveTrader(SyntheticProvider(),
+                    PaperBroker(1_000_000.0, cfg.costs), cfg, trail_pct=0.05)
+    a = bt._trail_for(bars, len(bars) - 1, 100.0)
+    b = lt._trail_for(bars, len(bars) - 1, 100.0)
+    assert a is not None and a == b
+
+
+def test_live_entry_passes_trail_to_the_broker(monkeypatch):
+    """live 가 trail= 을 안 넘기면 페이퍼는 계좌 기본값(고정 5%)으로 돈다."""
+    import inspect
+
+    from autotrader import live as live_mod
+    src = inspect.getsource(live_mod.LiveTrader.cycle)
+    assert "trail=self._trail_for(" in src, \
+        "live 진입이 트레일 폭을 브로커에 넘기지 않는다"
