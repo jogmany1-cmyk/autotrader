@@ -34,6 +34,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..config import KiwoomConfig
+from ..market import now_kst
 from ..models import Bar
 from .base import DataError, DataProvider
 
@@ -255,7 +256,13 @@ class KiwoomProvider(DataProvider):
                 headers=self._headers("ka10081", cont_yn=cont_yn, next_key=next_key),
                 data=json.dumps({
                     "stk_cd": symbol,
-                    "base_dt": "",       # 오늘 기준
+                    # base_dt 는 필수다. 빈 문자열이 "오늘" 로 해석될 거라고
+                    # 추측했다가 키움이 이렇게 거절했다:
+                    #   return_code=2 입력 값 오류입니다
+                    #   [1511:필수 입력 값에 값이 존재하지 않습니다. 파라미터=base_dt]
+                    # 조회 기준일은 한국 시간 기준이어야 한다 (UTC 로 넣으면
+                    # 한국 시간 09:00 이전에 하루 전 날짜가 들어간다).
+                    "base_dt": now_kst().strftime("%Y%m%d"),
                     "upd_stkpc_tp": "1", # 수정주가 사용
                 }),
                 timeout=15,

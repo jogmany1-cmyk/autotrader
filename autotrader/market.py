@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Iterable, Set
 
 # KRX 정규 휴장일 (연도별). 대체공휴일·임시공휴일 포함. 매년 초 갱신 필요.
@@ -36,6 +36,22 @@ KRX_HOLIDAYS: Set[date] = {
     date(2027, 9, 14), date(2027, 9, 15), date(2027, 9, 16), date(2027, 10, 4),
     date(2027, 10, 8), date(2027, 12, 24), date(2027, 12, 31),
 }
+
+# 한국 표준시. 서머타임이 없으므로 고정 오프셋으로 정확하다.
+# zoneinfo 를 쓰지 않는 이유: 윈도우에는 IANA 시간대 DB 가 없어 tzdata 패키지가
+# 필요한데, 그러면 "런타임 코어는 stdlib 만" 제약이 깨진다.
+KST = timezone(timedelta(hours=9))
+
+
+def now_kst() -> datetime:
+    """한국 시간 기준 현재 시각 (naive).
+
+    이 모듈의 장 시간 판정은 전부 한국 시간 기준이다. 호출자가
+    `datetime.utcnow()` 를 넘기면 9시간이 어긋나 장중을 휴장으로,
+    장 마감 후를 장중으로 판정한다. 시각이 필요한 곳은 이 함수를 쓴다.
+    """
+    return datetime.now(KST).replace(tzinfo=None)
+
 
 # KRX 정규 매매시간 (09:00 ~ 15:30)
 MARKET_OPEN = time(9, 0)

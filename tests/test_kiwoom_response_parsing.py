@@ -131,3 +131,55 @@ def test_diagnostics_recorded_for_error_message(prov):
     prov._inspect(_Resp({"return_code": 0, "weird_key": [ROW]}), "005930", "ka10081")
     diag = prov._diag()
     assert "HTTP 200" in diag and "weird_key" in diag
+
+
+# ---- 필수 파라미터 -------------------------------------------------------
+
+@requires_requests
+def test_daily_request_sends_non_empty_base_dt(prov, monkeypatch):
+    """base_dt 를 빈 문자열로 보내면 키움이 거절한다.
+
+        return_code=2: 입력 값 오류입니다
+        [1511:필수 입력 값에 값이 존재하지 않습니다. 필수입력 파라미터=base_dt]
+
+    빈 값이 "오늘" 로 해석될 거라 추측했던 것이 틀렸다. 실제 날짜를 넣는다.
+    """
+    import json as _json
+
+    captured = {}
+
+    class _Session:
+        def post(self, url, headers=None, data=None, timeout=None):
+            captured["url"] = url
+            captured["body"] = _json.loads(data)
+            return _Resp({"return_code": 0, "stk_dt_pole_chart_qry": [ROW]})
+
+    monkeypatch.setattr(prov, "_http", lambda: _Session())
+    monkeypatch.setattr(prov, "_headers", lambda *a, **k: {})
+    prov._fetch_daily("005930")
+
+    base_dt = captured["body"]["base_dt"]
+    assert base_dt, "base_dt 가 비어 있으면 키움이 요청을 거절한다"
+    assert len(base_dt) == 8 and base_dt.isdigit(), f"YYYYMMDD 형식이어야 함: {base_dt!r}"
+
+
+@requires_requests
+def test_base_dt_uses_korean_date_not_utc(prov, monkeypatch):
+    """UTC 를 쓰면 한국시간 오전 9시 이전에 하루 전 날짜가 들어간다."""
+    import json as _json
+    from datetime import datetime, timezone
+
+    from autotrader.market import now_kst
+
+    captured = {}
+
+    class _Session:
+        def post(self, url, headers=None, data=None, timeout=None):
+            captured["body"] = _json.loads(data)
+            return _Resp({"return_code": 0, "stk_dt_pole_chart_qry": [ROW]})
+
+    monkeypatch.setattr(prov, "_http", lambda: _Session())
+    monkeypatch.setattr(prov, "_headers", lambda *a, **k: {})
+    prov._fetch_daily("005930")
+
+    assert captured["body"]["base_dt"] == now_kst().strftime("%Y%m%d")
