@@ -199,3 +199,62 @@ def last_valid(seq: Sequence[Num]) -> Num:
         if v is not None:
             return v
     return None
+
+
+# ------------------------------------------------------------ 캐시 접근자
+# 전략은 매 봉마다 [0..at] 전체에 대해 지표를 다시 계산했다. 봉 수의 제곱으로
+# 느려져(1,000봉 6초 / 5,000봉 159초) 실험 반복의 병목이었다.
+#
+# 이 지표들은 인과적이다 — index i 의 값이 i 이하 데이터만 쓴다. 그래서 전체를
+# 한 번 계산해 [at] 을 읽은 값과, 앞부분만 잘라 계산한 마지막 값이 **정확히**
+# 같다 (부동소수점 오차도 0). tests/test_indicator_cache.py 가 그 성질과
+# 캐시 사용 시 결과 동일성을 함께 고정한다.
+#
+# ctx.cache 가 없으면 예전처럼 그때그때 계산한다 — 동작은 같고 느릴 뿐이다.
+
+
+def _cached(ctx, key, build):
+    cache = getattr(ctx, "cache", None)
+    if cache is None:
+        return build()
+    hit = cache.get(key)
+    # 같은 종목이라도 봉이 늘어났으면 다시 만든다.
+    if hit is None or len(hit) < len(ctx.bars):
+        hit = build()
+        cache[key] = hit
+    return hit
+
+
+def atr_at(ctx, period: int = 14) -> Num:
+    """ctx.at 시점의 ATR."""
+    series = _cached(ctx, ("atr", period), lambda: atr(ctx.bars, period))
+    return series[ctx.at]
+
+
+def rsi_at(ctx, period: int = 14) -> Num:
+    series = _cached(ctx, ("rsi", period),
+                     lambda: rsi(closes(ctx.bars), period))
+    return series[ctx.at]
+
+
+def sma_at(ctx, period: int) -> Num:
+    series = _cached(ctx, ("sma", period),
+                     lambda: sma(closes(ctx.bars), period))
+    return series[ctx.at]
+
+
+def ema_at(ctx, period: int) -> Num:
+    series = _cached(ctx, ("ema", period),
+                     lambda: ema(closes(ctx.bars), period))
+    return series[ctx.at]
+
+
+def roc_at(ctx, period: int) -> Num:
+    series = _cached(ctx, ("roc", period),
+                     lambda: roc(closes(ctx.bars), period))
+    return series[ctx.at]
+
+
+def closes_at(ctx) -> List[float]:
+    """종가 리스트도 매번 새로 만들면 O(n²) 이므로 함께 캐시한다."""
+    return _cached(ctx, ("closes",), lambda: closes(ctx.bars))

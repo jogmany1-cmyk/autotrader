@@ -103,6 +103,9 @@ class Backtester:
         cooldown = CooldownRegistry(default_bars=self.config.risk.cooldown_bars_after_stop)
         tracker = PredictionTracker()
         equity_points: List[EquityPoint] = []
+        # 종목별 지표 시리즈 캐시. 같은 종목의 모든 봉이 공유한다.
+        # 없으면 매 봉마다 전체를 다시 계산해 봉 수의 제곱으로 느려진다.
+        indicator_cache: Dict[str, Dict] = {}
         # (symbol, stop, target, tag, score, votes, detail)
         pending: List[Tuple[str, float, float, str, float, int, Dict[str, float]]] = []
 
@@ -204,7 +207,9 @@ class Backtester:
                 idx = _index_at(bars, ts)
                 if idx is None:
                     continue
-                dec = self.ensemble.evaluate(StrategyContext(sym, bars, idx))
+                dec = self.ensemble.evaluate(
+                    StrategyContext(sym, bars, idx,
+                                    cache=indicator_cache.setdefault(sym, {})))
                 if dec.signal.side is not Side.BUY:
                     continue
                 pending.append((

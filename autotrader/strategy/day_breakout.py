@@ -37,8 +37,7 @@ class DayBreakout(Strategy):
         # 직전 breakout_period 봉의 최고가 (당일 제외)
         prior_high = max(highs[-1 - self.breakout_period:-1])
         avg_vol = sum(vols[-1 - self.vol_period:-1]) / self.vol_period
-        atr_series = ind.atr(bars, self.atr_period)
-        atr_val = atr_series[-1]
+        atr_val = ind.atr_at(ctx, self.atr_period)
         if atr_val is None or atr_val <= 0:
             return StrategyResult.hold("no-atr")
 

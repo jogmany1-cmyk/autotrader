@@ -26,10 +26,9 @@ class MeanReversion(Strategy):
         if gr:
             return gr
         bars = list(ctx.bars[: ctx.at + 1])
-        closes = ind.closes(bars)
-        ma_s = ind.sma(closes, self.slow)[-1]
-        atr_val = ind.atr(bars, self.atr_p)[-1]
-        rsi = ind.rsi(closes, self.rsi_p)[-1]
+        ma_s = ind.sma_at(ctx, self.slow)
+        atr_val = ind.atr_at(ctx, self.atr_p)
+        rsi = ind.rsi_at(ctx, self.rsi_p)
         cur = bars[-1]
         if None in (ma_s, atr_val, rsi) or atr_val <= 0:
             return StrategyResult.hold("nan")

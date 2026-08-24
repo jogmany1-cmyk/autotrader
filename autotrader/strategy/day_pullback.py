@@ -30,13 +30,12 @@ class DayPullback(Strategy):
         if gr:
             return gr
         bars = list(ctx.bars[: ctx.at + 1])
-        closes = ind.closes(bars)
         cur: Bar = bars[-1]
         prev: Bar = bars[-2]
-        ma_fast = ind.sma(closes, self.fast)[-1]
-        ma_slow = ind.sma(closes, self.slow)[-1]
-        rsi = ind.rsi(closes, self.rsi_p)[-1]
-        atr_val = ind.atr(bars, self.atr_p)[-1]
+        ma_fast = ind.sma_at(ctx, self.fast)
+        ma_slow = ind.sma_at(ctx, self.slow)
+        rsi = ind.rsi_at(ctx, self.rsi_p)
+        atr_val = ind.atr_at(ctx, self.atr_p)
         if None in (ma_fast, ma_slow, rsi, atr_val) or atr_val <= 0:
             return StrategyResult.hold("nan")
 

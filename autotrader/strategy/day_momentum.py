@@ -25,11 +25,10 @@ class DayMomentum(Strategy):
         if gr:
             return gr
         bars = list(ctx.bars[: ctx.at + 1])
-        closes = ind.closes(bars)
         cur: Bar = bars[-1]
-        r = ind.roc(closes, self.roc_period)[-1]
+        r = ind.roc_at(ctx, self.roc_period)
         hi = max(b.high for b in bars[-self.hi_period:])
-        atr_val = ind.atr(bars, 14)[-1]
+        atr_val = ind.atr_at(ctx, 14)
         if r is None or atr_val is None or atr_val <= 0:
             return StrategyResult.hold("nan")
         near_high = cur.close >= hi * 0.995
