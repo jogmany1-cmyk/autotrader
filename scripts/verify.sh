@@ -60,8 +60,12 @@ step "스모크: 백테스트"   $PY -m autotrader --threshold 0.45 backtest
 step "스모크: 페이퍼매매" $PY -m autotrader --threshold 0.45 --votes 1 paper --cycles 2 --dry-run
 
 # 4. 데이터 무결성 — 실데이터가 있을 때만. 승격 경로 2단계의 게이트.
-if [ -d "$CACHE" ]; then
+# 폴더가 있어도 CSV 가 하나도 없으면 "아직 안 모았다" 이지 실패가 아니다.
+# fetch 는 실패해도 캐시 폴더를 만들어 두므로 빈 폴더가 흔하게 생긴다.
+if [ -d "$CACHE" ] && ls "$CACHE"/*.csv >/dev/null 2>&1; then
   step "데이터 무결성 ($CACHE)" $PY -m autotrader --csv "$CACHE" validate-data
+elif [ -d "$CACHE" ]; then
+  skip "데이터 무결성" "$CACHE 가 비어 있음 (아직 수집된 시세 없음)"
 else
   skip "데이터 무결성" "$CACHE 없음 (아직 시세를 수집하지 않음)"
 fi

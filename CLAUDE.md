@@ -1,181 +1,108 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+이 파일은 매 세션 자동으로 읽힌다. **짧게 유지한다** — 상세 내용은 `docs/`에 있다.
 
-## Repository
+## 이 프로젝트
 
-This repo is a standalone Python trading system (스크리닝 → 전략 앙상블 → Risk Engine → 브로커). It was split out of a combined repo (`jogmany1-cmyk/diary`) that used to hold this code under an `autotrader/` subfolder alongside an unrelated diary web app; the git history was carried over with `git subtree split`, so old commits still say "autotrader v0.x" etc.
+한국 주식 자동매매 시스템 (스크리닝 → 전략 앙상블 → Risk Engine → 브로커).
+순수 Python, **표준 라이브러리만으로 동작**한다 (numpy/pandas/requests 없이).
+CLI 하나로 백테스트·모의매매·시세수집이 전부 돌아간다. 화면(UI)은 없다.
 
-All commands below run from the **repo root** (there is no longer an `autotrader/` prefix on the path — the Python package itself is at `autotrader/` inside this repo, i.e. `./autotrader/autotrader/`).
+`jogmany1-cmyk/diary` 저장소에서 `git subtree split` 으로 분리해 나왔다.
+그래서 옛 커밋 메시지에 "autotrader v0.x" 같은 표기가 남아 있다.
 
-## Target environment
+## 사용자와 대화하는 방식 (항상 지킬 것)
 
-The user runs **Windows**. Give Windows-first instructions: PowerShell (not
-bash), `python` (not `python3`), `$env:VAR='...'` for environment variables,
-`\` in paths, and Task Scheduler rather than cron.
+1. **코드는 최종 명령이 있을 때만 작성/수정한다.** "해줘 / 작성해줘 / 수정해줘"처럼
+   실행을 확정하는 말이 나오기 전에는 코드를 먼저 쓰지 않는다. 그 전에는
+   무엇을 어떻게 바꿀지 **내용만 먼저 보여주고** 확인을 기다린다.
+2. **용어는 처음 한 번 풀어서 설명하고, 이후엔 (7자 내외) 짧은 괄호 설명만 붙인다.**
+   예: 처음 → "커밋(작업 내용을 저장 기록으로 남기는 것)" / 이후 → "커밋(저장기록)"
+3. **선택지를 주거나 실행 여부를 물을 때는 결과까지 설명한다.** 그 선택/명령을
+   실행하면 실제로 무슨 일이 일어나는지 함께 말해준다. 옵션만 나열하지 않는다.
 
-The runtime code itself is Windows-clean — verified, not assumed: no POSIX-only
-imports, no hardcoded POSIX paths, `os.path.join` throughout, every `open()`
-names its encoding (so Windows' cp949 default never mangles Korean), and the CSV
-writers pass `newline=""` so no blank rows creep in. `python -m autotrader ...`
-runs as-is.
+## 실행 환경 — Windows
 
-Two things do NOT work on Windows:
+사용자는 **Windows + PowerShell**을 쓴다. 안내는 항상 Windows 기준으로 한다.
 
-- `scripts/verify.sh` is bash — it needs Git Bash (bundled with Git for
-  Windows), not PowerShell.
-- `autotrader schedule` emits 5-field crontab lines. Task Scheduler cannot
-  consume them; the jobs must be registered separately (`schtasks` or the GUI).
+- `python` (`python3` 아님) · 환경변수는 `$env:VAR='값'` (`export` 아님)
+- 명령 예시의 경로는 `data/kiwoom` 처럼 `/` 로 써도 PowerShell·Python 양쪽에서
+  동작한다. 사람에게 폴더 위치를 설명할 때만 `바탕화면\autotrader` 처럼 쓴다.
+- **`scripts/verify.sh` 는 PowerShell 에서 안 돈다** — Git Bash 에서 돌려야 한다.
+- **cron 이 없다.** `autotrader schedule` 이 뱉는 crontab 라인을 Windows 작업
+  스케줄러가 소비할 수 없다. 이 갭은 아직 메워져 있지 않다.
 
-## Branch policy
+런타임 코드 자체는 Windows-clean 이다 (추정이 아니라 확인함): POSIX 전용 임포트
+없음, 하드코딩된 POSIX 경로 없음, `os.path.join` 사용, 모든 `open()` 이 encoding
+명시(cp949 로 한글 깨지지 않음), CSV 쓰기가 `newline=""` 지정.
 
-Develop on `main`. This repo has no other special branch — unlike the old combined repo, there's no diary content to keep separate from.
+## 검증 상태 — PRE-LIVE / UNDER VALIDATION
 
-## Validation state
+**단위 테스트 통과는 매매 유효성이나 수익성의 증거가 아니다.**
 
-This project is currently PRE-LIVE / UNDER VALIDATION.
+승격 경로 (건너뛰기 금지):
 
-Passing unit tests or synthetic-data tests does not establish trading validity or profitability.
+```
+키움 실데이터 → 데이터 무결성 → 과거 유니버스 → 백테스트 → OOS
+  → 레지스트리 승인 → 페이퍼 트레이딩 → 사람의 명시적 승인 → 실전
+```
 
-Required promotion path:
+AI 는 승격을 **권고**할 수 있으나 **실전 승인은 절대 내릴 수 없다.**
 
-Kiwoom real data → data integrity → historical universe → backtest → OOS → registry approval → paper trading → explicit human approval → live
+데이터 무결성 단계에는 실행 가능한 게이트가 있다. `autotrader validate-data` 는
+가격 데이터가 내부적으로 모순이면 0 이 아닌 코드로 종료한다. 새로 수집한 캐시는
+백테스트 전에 반드시 통과시킨다 — `CsvProvider` 가 파싱 실패한 행을 조용히
+버리고 정렬까지 해버리기 때문에, 이 게이트가 없으면 깨진 데이터가 아무 불평 없이
+백테스트에 도달한다.
 
-Never skip a stage. AI agents may recommend promotion but may never grant live approval.
+비자명한 변경은: 조사 → 계획 → 구현 → 테스트 → 검증 → 보고.
+**검증하지 않은 동작을 검증했다고 보고하지 않는다.**
 
-The data-integrity stage has an executable gate: `autotrader validate-data` exits
-non-zero when the price data is internally inconsistent (`dataquality.py`). Run it
-on every freshly collected cache before backtesting — `CsvProvider` silently drops
-unparseable rows and sorts what it reads, so corrupt input otherwise reaches the
-backtester without a single complaint.
+의미 있는 실패를 발견하면 산문 규칙을 늘리는 대신
+**실패 → 회귀 테스트 → 수정 → 실행 가능한 게이트** 로 만든다.
 
-For non-trivial changes:
+## 절대 깨면 안 되는 규칙 6가지
 
-inspect → plan → implement → test → verify → report
+상세와 근거는 `docs/ARCHITECTURE.md` 에 있다.
 
-Never report unverified behaviour as verified.
+1. **미래 정보 금지.** 전략은 `[0..at]` 구간만 본다. 오늘 종가로 판단하고 다음 봉
+   시가에 체결한다. `StrategyContext.at` 이 경계선이다.
+2. **RiskEngine 이 모든 진입의 최종 거부권을 갖는다.** 신호는 권고일 뿐이다.
+   새 안전장치는 전략이 아니라 `RiskEngine.evaluate_entry(...)` 에 붙인다.
+3. **비용은 항상 포함한다.** `Fill.cost` 를 우회하면 백테스트가 수익을 과장한다.
+4. **전략은 순수·무상태.** `__init__` 에서 설정하고 `evaluate(ctx)` 에서 판단한다.
+5. **`DataProvider` 가 백테스트와 실매매의 경계면이다.** 전략·리스크 코드에서
+   벤더 API 를 직접 부르지 않는다.
+6. **LLM 은 주문을 내지 않는다.** AI 성격의 판단은 앙상블 *앞단* 입력으로만 둔다.
 
-When a meaningful failure is found, prefer:
-
-failure → regression test → fix → executable gate
-
-over adding more prose rules.
-
-Detailed validation procedures belong in `.claude/skills/`, not in this file.
-
-## Commands
+## 자주 쓰는 명령
 
 ```bash
-# End-to-end sanity check with the built-in synthetic data provider
+# 합성 데이터로 전 구간 점검
 python -m autotrader screen --top 5
 python -m autotrader --threshold 0.45 backtest
-python -m autotrader --threshold 0.45 paper --cycles 3 --dry-run
 
-# Real data path (CSV under a directory with {SYMBOL}.csv files)
-python -m autotrader --csv data/kospi backtest --output out.json
+# 시세 수집 (KIWOOM_APP_KEY 등 환경변수 필요)
+python -m autotrader fetch --cache data/kiwoom --symbol 005930 --limit 500
 
-# Auto-collect price history from Kiwoom REST (needs KIWOOM_APP_KEY etc.)
-python -m autotrader fetch --cache ./data/kiwoom --symbol 005930 --limit 500
-python -m autotrader fetch --cache ./data/kiwoom --minutes 5   # 분봉
-
-# Data integrity gate (run BEFORE trusting any backtest on real data)
+# 데이터 무결성 게이트 — 실데이터 백테스트 전에 반드시
 python -m autotrader --csv data/kiwoom validate-data
-python -m autotrader --csv data/kiwoom validate-data --strict --output runs/quality.json
 
-# Strategy registry gate (only run validated strategies live)
-python -m autotrader validate --registry runs/registry.json
+# 전략 승인 게이트
 python -m autotrader paper --registry runs/registry.json --validated-only
-
-# Print the standard cron schedule (paste into `crontab -e` on Mac/Linux)
-python -m autotrader schedule --prefix "python -m autotrader run-job "
-
-# Execute a scheduled job directly (this is what each cron line calls)
-python -m autotrader run-job morning-entry --cache ./data/kiwoom
-python -m autotrader run-job eod-flat
-python -m autotrader run-job collect-daily
-python -m autotrader run-job collect-5m
-python -m autotrader run-job post-analysis
 ```
 
-### Global-vs-subcommand flags
+**전역 옵션(`--csv` `--config` `--threshold` `--votes` `--trail`)은 하위 명령
+앞에 쓴다.** 뒤에 쓰면 argparse 가 거부한다.
 
-`--csv`, `--config`, `--threshold`, `--votes`, `--trail` are **parsed on the parser itself, before the subcommand name**:
+## 브랜치
 
-```bash
-# correct
-python -m autotrader --threshold 0.45 backtest
-# wrong — argparse will reject with 'unrecognized arguments'
-python -m autotrader backtest --threshold 0.45
-```
+`main` 에서 개발한다. 옛 통합 저장소와 달리 분리해 둘 다이어리 콘텐츠가 없다.
 
-### Testing
+## 문서 목차
 
-```bash
-./scripts/verify.sh            # everything at once — run this before pushing
-pip install pytest             # optional dep
-pytest -q                      # entire suite (currently ~160 tests)
-pytest tests/test_backtest.py  # one file
-pytest -q -k "cost_audit"      # keyword filter
-```
-
-`scripts/verify.sh` runs the unit tests, the stdlib-only guard, the synthetic
-end-to-end smoke (screen → backtest → paper), and — when a price cache exists —
-`validate-data`. It reports every failure at once and exits non-zero if any step
-fails. Point it at another cache with `CACHE=data/kospi ./scripts/verify.sh`.
-GitHub Actions (`.github/workflows/verify.yml`) runs this exact script on
-Python 3.9 / 3.11 / 3.13 for every push, so local and CI never diverge. A second
-job installs `.[live,dev]` and runs the full suite, because the vendor-adapter
-tests skip themselves when `requests` is absent (`tests/_optional.py`) — without
-that job they would never run anywhere. In a bare environment `pytest -q` is
-130 passed + 10 skipped; with `requests` installed it is 140 passed.
-
-The stdlib-only rule above is enforced by `scripts/check_stdlib_only.py`, not by
-trust: it blocks `numpy`/`pandas`/`requests`/`websockets`/`yaml` at the import
-hook, then imports every module and runs a backtest. That makes the check valid
-even on a machine where those packages happen to be installed — this dev
-container has `requests` and `yaml`, so a bare `pytest` run proves nothing about
-the constraint. Optional vendor deps must stay lazily imported inside functions
-(see `broker/kis.py`).
-
-There is no separate lint/typecheck tooling wired up. Keep runtime code stdlib-only unless explicitly needed — the core (models, indicators, strategies, backtest, risk, portfolio, live, streaming) must work without `numpy`/`pandas`/`requests` because tests rely on that.
-
-## Architecture (big-picture)
-
-The system is a pipeline whose stages are strictly ordered so the model doesn't accidentally couple layers. Read the flow top-down when tracing behaviour:
-
-```
-DataProvider (CSV | Synthetic | Kiwoom REST)
-   → Screener (tier1 price → tier2 indicator → tier3 ranking)
-      → Ensemble of 5 strategies (DayBreakout, DayPullback, DayMomentum,
-                                    SwingTrend, MeanReversion) — weighted vote
-         → RiskEngine (position sizing + account limits + cooldown + chase
-                        filter + daily cap + hard stop)   ← final authority
-            → Broker (PaperBroker | KISBroker | KiwoomBroker)
-               → Portfolio (trailing stop, EOD flat, target/stop exits)
-                  → PredictionTracker + Metrics (CostAudit, win rate,
-                                                 PF, Sortino, MDD, …)
-```
-
-Key invariants that anything you touch must preserve:
-
-- **No look-ahead.** Strategies see only bars `[0..at]`. Backtester decides on today's close and fills on the next bar's open. `StrategyContext.at` is the boundary — never read past it.
-- **RiskEngine has veto power over every entry.** Signals are advisory; `RiskEngine.evaluate_entry(...)` is the last gate. Wire new features (chase filter, daily trade cap, cooldown) here, not inside strategies.
-- **Costs are always included.** `Costs` (commission bp + tax bp + slippage bp) is applied by `PaperBroker`, and `metrics.build_cost_audit` surfaces turnover and cost-to-capital in every `BacktestReport`. If a change silently bypasses `Fill.cost`, backtests overstate returns.
-- **Strategies are pure and stateless** — configured in `__init__`, decisions in `evaluate(ctx)`. Add new ones by subclassing `Strategy` and giving them a `name` that matches a field on `StrategyWeights`. `Ensemble` finds them via the weight map.
-- **`DataProvider` is the seam between backtest and live.** `CsvProvider` and `KiwoomProvider` write to the same CSV layout, so swapping providers keeps the rest of the pipeline unchanged. Never call vendor APIs from strategy/risk code — go through the provider.
-- **LLMs never place orders.** The design deliberately keeps AI-shaped decisions (news sentiment, regime hints) as inputs *before* the ensemble score; execution stays deterministic. Do not add a code path where an LLM response short-circuits `RiskEngine`.
-
-### Notable subsystems
-
-- **`market.py`** — KRX holiday table + NXT extended sessions (`pre` 08:00–08:59, `regular` 09:00–15:30, `after` 15:30–20:00). `LiveTrader.cycle` bails out early on `session=closed`.
-- **`reconciler.SourceReconciler`** — cross-source dedup for the "KRX-only vs KRX+NXT" leak problem. Runs the same predicate on two providers and reports `only_in_secondary` as the leak set.
-- **`registry.StrategyRegistry`** — JSON-backed approval store. `paper --validated-only` filters the ensemble down to strategies whose latest OOS backtest passes (`profit_factor ≥ 1.2`, `trades ≥ 20`, `mdd ≥ -0.25`, ≤ 90 days old). Live trading should never bypass this gate.
-- **`streaming/`** — abstract `StreamClient` (thread + queue). `LocalStream` for tests; `KiwoomConditionStream` is a WebSocket skeleton that emits `signal`/`heartbeat` events. `LiveTrader.stream` (optional) `drain()`s events at the end of each cycle and pushes hits through the same `Ensemble → Risk → Broker` pipeline as polled candidates.
-- **`scheduler.JobRegistry` + `jobs.py`** — 5-field cron parser and the actual callables cron invokes (`morning-entry`, `eod-flat`, `collect-daily`, `collect-5m`, `post-analysis`). Jobs fall back to `CsvProvider` gracefully when Kiwoom credentials are missing.
-- **`notify.Notifier`** — fan-out notification bus. `ConsoleChannel` is the default; add vendor channels (Slack/Telegram/…) by implementing `NotificationChannel`. A failing channel must not break trading — the notifier swallows per-channel exceptions on purpose.
-- **`KiwoomProvider` cache format** is intentionally identical to `CsvProvider`. Daily bars go to `{cache_dir}/{symbol}.csv`; minute bars to `{cache_dir}/{symbol}_{interval}m.csv`. Merge is date-keyed with fresh > old.
-- **`KrxUniverse`** — JSONL snapshots of historical listings for survivorship-bias defence. `union_between(start, end)` returns the *union* over the interval (i.e. includes delisted symbols).
-
-### Config
-
-`Config` (dataclass tree in `autotrader/config.py`) is the single source of numeric truth. `Config.load(path)` merges a YAML overlay onto defaults (YAML is optional — if PyYAML is missing, only defaults are used). Broker credentials come from environment: `KIS_APP_KEY` / `KIS_APP_SECRET` / `KIS_ACCOUNT_NUMBER` / `KIS_MODE` and the parallel `KIWOOM_*` set. `KISConfig.from_env()` / `KiwoomConfig.from_env()` are the only readers — do not scatter `os.getenv` elsewhere.
+| 언제 | 파일 |
+|---|---|
+| 구조·데이터 흐름·저장 위치를 알아야 할 때 | `docs/ARCHITECTURE.md` |
+| 테스트·검증 실행법, 새 전략/설정 추가 절차 | `docs/CONVENTIONS.md` |
+| **작업 시작 전 한 번 훑을 것** — 반복해서 걸린 함정들 | `docs/PITFALLS.md` |
