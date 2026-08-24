@@ -223,12 +223,16 @@ def cmd_validate(args) -> int:
     reg = StrategyRegistry(args.registry)
     th = reg.thresholds
     print(f"승인 기준: PF>={th.min_oos_profit_factor} trades>={th.min_oos_trades} "
-          f"DD>={th.max_oos_drawdown} age<={th.max_age_days}d")
+          f"net>{th.min_oos_net_return:+.2%} DD>={th.max_oos_drawdown} "
+          f"age<={th.max_age_days}d")
     validated = set(reg.validated_names())
     for rec in reg.all_records():
         mark = "PASS" if rec.name in validated else "FAIL"
+        net = ("미측정" if rec.oos_net_return is None
+               else f"{rec.oos_net_return:+.2%}")
         print(f"  [{mark}] {rec.name:<20} PF={rec.oos_profit_factor:.2f} "
-              f"trades={rec.oos_trades:>4} DD={rec.oos_max_drawdown:+.3f}")
+              f"trades={rec.oos_trades:>4} net={net:>8} "
+              f"DD={rec.oos_max_drawdown:+.3f}")
     return 0
 
 
@@ -250,11 +254,11 @@ def cmd_validate_data(args) -> int:
     checker = DataQualityChecker(limits, as_of=as_of)
 
     if args.csv:
-        rep = checker.check_csv_dir(args.csv, args.symbol)
+        rep = checker.check_csv_dir(args.csv, args.symbol, limit=args.bars)
         source = args.csv
     else:
         provider = SyntheticProvider()
-        rep = checker.check_provider(provider, args.symbol)
+        rep = checker.check_provider(provider, args.symbol, limit=args.bars)
         source = "합성 데이터 (실데이터 검증에는 --csv 를 쓰세요)"
     if not rep.symbols and not rep.unreadable:
         print(f"[ERROR] 검사할 종목이 없습니다: {source}")
@@ -393,6 +397,9 @@ def main(argv: Optional[list] = None) -> int:
                           help="실데이터 무결성 검사 (백테스트 이전 관문)")
     p_vd.add_argument("--symbol", action="append",
                       help="검사할 종목 (반복 지정 가능). 미지정 시 유니버스 전체")
+    p_vd.add_argument("--bars", type=int, default=0,
+                      help="종목당 검사할 최근 봉 수. 0(기본)이면 전체 이력. "
+                           "백테스트와 같은 값을 주면 실제로 쓸 구간만 검사한다")
     p_vd.add_argument("--min-bars", type=int, default=200,
                       help="종목당 최소 봉 수 (미만이면 short_history 경고)")
     p_vd.add_argument("--jump-pct", type=float, default=0.30,

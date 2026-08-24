@@ -208,11 +208,19 @@ class DataQualityChecker:
         return rep
 
     def check_provider(self, provider: DataProvider,
-                       symbols: Optional[Sequence[str]] = None) -> QualityReport:
+                       symbols: Optional[Sequence[str]] = None,
+                       limit: int = 0) -> QualityReport:
+        """`limit` 은 종목당 검사할 최근 봉 수. 0 이면 전체 이력.
+
+        백테스트가 최근 N봉만 쓰는데 검사는 40년치 전부를 보면, 쓰지도 않을
+        1985년 봉 하나 때문에 FAIL 이 뜬다. 그러면 게이트를 무시하는 습관이
+        생긴다 — 게이트가 있으나 마나가 되는 가장 흔한 경로다. 그래서 실제로
+        쓸 구간만 검사할 수 있게 한다 (`backtest --bars` 와 같은 값을 준다).
+        """
         rep = QualityReport(as_of=self.as_of)
         for sym in (symbols if symbols is not None else provider.universe()):
             try:
-                bars = provider.history(sym, limit=0)  # limit=0 → 전체 이력
+                bars = provider.history(sym, limit=limit)
             except DataError as exc:
                 rep.unreadable.append((sym, str(exc)))
                 continue
@@ -220,7 +228,8 @@ class DataQualityChecker:
         return rep
 
     def check_csv_dir(self, directory: str,
-                      symbols: Optional[Sequence[str]] = None) -> QualityReport:
+                      symbols: Optional[Sequence[str]] = None,
+                      limit: int = 0) -> QualityReport:
         """CSV 디렉터리 검사 + 원본 행 수 대조.
 
         `CsvProvider` 가 조용히 버린 행을 드러내려고 원본 행 수를 따로 센다.
@@ -230,7 +239,12 @@ class DataQualityChecker:
         from .data.csv_provider import CsvProvider
 
         provider = CsvProvider(directory)
-        rep = self.check_provider(provider, symbols)
+        rep = self.check_provider(provider, symbols, limit=limit)
+        if limit:
+            # 구간을 잘라 검사할 때는 원본 행 수 대조를 하지 않는다. 파일에는
+            # 10,914행이 있는데 2,500봉만 실었으니 "8,414행이 유실됐다" 는
+            # 거짓 경보가 난다. 유실 검사는 전체를 볼 때만 의미가 있다.
+            return rep
         for sym_rep in rep.symbols:
             path = os.path.join(directory, f"{sym_rep.symbol}.csv")
             raw = _count_raw_rows(path)

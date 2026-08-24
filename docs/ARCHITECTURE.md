@@ -90,7 +90,8 @@ autotrader/
   regular 09:00–15:30, after 15:30–20:00). `session=closed` 면 사이클 자체를
   건너뛴다. **모든 판정은 한국시간 기준** — `now_kst()` 를 쓴다.
 - **`registry.StrategyRegistry`** — JSON 승인 저장소. `paper --validated-only` 는
-  최신 OOS 백테스트가 기준(PF≥1.2, 거래≥20, MDD≥-0.25, 90일 이내)을 통과한
+  최신 OOS 백테스트가 기준(PF≥1.2, **거래≥50**, **순수익>0**, MDD≥-0.25,
+  90일 이내)을 통과한
   전략만 앙상블에 넣는다. 실전은 이 게이트를 절대 우회하지 않는다.
 - **`reconciler.SourceReconciler`** — 같은 조건식을 두 provider 에 돌려
   `only_in_secondary` 를 누락 집합으로 보고한다 (KRX 단독 vs KRX+NXT 통합 문제).

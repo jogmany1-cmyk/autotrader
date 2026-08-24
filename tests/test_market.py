@@ -50,8 +50,10 @@ def test_live_trader_filters_to_validated_strategies():
     from autotrader.registry import StrategyRegistry, StrategyRecord
 
     reg = StrategyRegistry()
-    reg.upsert(StrategyRecord("day_breakout", dt.datetime.utcnow(), 1.5, 40, -0.10))
-    reg.upsert(StrategyRecord("swing_trend", dt.datetime.utcnow(), 1.5, 40, -0.10))
+    reg.upsert(StrategyRecord("day_breakout", dt.datetime.utcnow(), 1.5, 60,
+                              -0.10, oos_net_return=0.08))
+    reg.upsert(StrategyRecord("swing_trend", dt.datetime.utcnow(), 1.5, 60,
+                              -0.10, oos_net_return=0.08))
     p = SyntheticProvider()
     cfg = Config.default()
     cfg.universe.symbols = p.universe()
