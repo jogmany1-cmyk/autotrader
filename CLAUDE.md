@@ -94,16 +94,25 @@ python -m autotrader backtest --threshold 0.45
 ```bash
 ./scripts/verify.sh            # everything at once — run this before pushing
 pip install pytest             # optional dep
-pytest -q                      # entire suite (currently ~139 tests)
+pytest -q                      # entire suite (currently ~140 tests)
 pytest tests/test_backtest.py  # one file
 pytest -q -k "cost_audit"      # keyword filter
 ```
 
-`scripts/verify.sh` runs the unit tests, the synthetic end-to-end smoke (screen →
-backtest → paper), and — when a price cache exists — `validate-data`. It reports
-every failure at once and exits non-zero if any step fails, so it drops straight
-into CI or a pre-push hook. Point it at another cache with
-`CACHE=data/kospi ./scripts/verify.sh`.
+`scripts/verify.sh` runs the unit tests, the stdlib-only guard, the synthetic
+end-to-end smoke (screen → backtest → paper), and — when a price cache exists —
+`validate-data`. It reports every failure at once and exits non-zero if any step
+fails. Point it at another cache with `CACHE=data/kospi ./scripts/verify.sh`.
+GitHub Actions (`.github/workflows/verify.yml`) runs this exact script on
+Python 3.9 / 3.11 / 3.13 for every push, so local and CI never diverge.
+
+The stdlib-only rule above is enforced by `scripts/check_stdlib_only.py`, not by
+trust: it blocks `numpy`/`pandas`/`requests`/`websockets`/`yaml` at the import
+hook, then imports every module and runs a backtest. That makes the check valid
+even on a machine where those packages happen to be installed — this dev
+container has `requests` and `yaml`, so a bare `pytest` run proves nothing about
+the constraint. Optional vendor deps must stay lazily imported inside functions
+(see `broker/kis.py`).
 
 There is no separate lint/typecheck tooling wired up. Keep runtime code stdlib-only unless explicitly needed — the core (models, indicators, strategies, backtest, risk, portfolio, live, streaming) must work without `numpy`/`pandas`/`requests` because tests rely on that.
 

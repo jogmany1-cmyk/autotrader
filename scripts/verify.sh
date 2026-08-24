@@ -51,12 +51,15 @@ else
   skip "단위 테스트 (pytest)" "pytest 미설치 — pip install pytest"
 fi
 
-# 2. 합성 데이터 스모크 — 파이프라인이 끝에서 끝까지 도는지
+# 2. stdlib 전용 제약 — 개발 머신에 requests/yaml 이 깔려 있어도 유효한 검사
+step "stdlib 전용 제약" $PY scripts/check_stdlib_only.py
+
+# 3. 합성 데이터 스모크 — 파이프라인이 끝에서 끝까지 도는지
 step "스모크: 스크리너"   $PY -m autotrader screen --top 3
 step "스모크: 백테스트"   $PY -m autotrader --threshold 0.45 backtest
 step "스모크: 페이퍼매매" $PY -m autotrader --threshold 0.45 --votes 1 paper --cycles 2 --dry-run
 
-# 3. 데이터 무결성 — 실데이터가 있을 때만. 승격 경로 2단계의 게이트.
+# 4. 데이터 무결성 — 실데이터가 있을 때만. 승격 경로 2단계의 게이트.
 if [ -d "$CACHE" ]; then
   step "데이터 무결성 ($CACHE)" $PY -m autotrader --csv "$CACHE" validate-data
 else

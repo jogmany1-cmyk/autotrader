@@ -86,11 +86,21 @@ pip install requests    # 선택 의존성
 pip install pytest
 pytest -q
 
-# 또는 푸시 전 한 번에 (테스트 + 합성 스모크 + 데이터 무결성)
+# 또는 푸시 전 한 번에 (테스트 + stdlib 제약 + 합성 스모크 + 데이터 무결성)
 ./scripts/verify.sh
 ```
 
-139개 테스트가 지표·데이터·데이터무결성·전략·리스크·포트폴리오·브로커·백테스트·스크리너·성과지표를 검증합니다.
+푸시하면 GitHub Actions 가 **같은 스크립트를** Python 3.9 / 3.11 / 3.13 에서
+돌린다 (`.github/workflows/verify.yml`). CI 전용 명령을 따로 두지 않았다 —
+로컬과 CI 가 갈라지면 "통과했다" 는 말의 의미도 갈라지기 때문이다.
+
+`scripts/check_stdlib_only.py` 는 "런타임 코어는 stdlib 만" 이라는 제약을
+신뢰가 아니라 검사로 강제한다. numpy·pandas·requests·websockets·yaml 을
+임포트 훅에서 **차단한 뒤** 전 모듈을 임포트하고 백테스트를 한 바퀴 돌린다.
+그래서 그 패키지들이 깔려 있는 머신에서도 유효하다 (개발 컨테이너에는 실제로
+requests 와 yaml 이 있어서, 맨 pytest 통과는 이 제약을 전혀 증명하지 못한다).
+
+140개 테스트가 지표·데이터·데이터무결성·전략·리스크·포트폴리오·브로커·백테스트·스크리너·성과지표를 검증합니다.
 
 ## 7. 파일 지도
 
@@ -110,7 +120,7 @@ autotrader/
   backtest.py         이벤트 기반 백테스트, 자동 train/val/OOS 분할
   live.py             LiveTrader — 페이퍼/실계좌 공통 사이클
   cli.py              `python -m autotrader …`
-tests/                pytest 스위트 (139개)
+tests/                pytest 스위트 (140개)
 ```
 
 

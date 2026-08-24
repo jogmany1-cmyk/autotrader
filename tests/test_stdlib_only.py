@@ -1,0 +1,23 @@
+"""런타임 코어의 stdlib 전용 제약을 pytest 에서도 강제한다.
+
+이 제약은 CLAUDE.md 에 적혀만 있고 어디서도 검사되지 않았다. 개발 머신이나 CI
+컨테이너에 requests/yaml 이 깔려 있으면 (이 저장소의 개발 환경이 실제로 그렇다)
+모듈 상단에 import pandas 를 넣어도 테스트가 전부 통과한다.
+
+검사는 별도 프로세스로 돌린다. 임포트 차단 훅을 현재 인터프리터에 꽂으면 이미
+sys.modules 에 올라온 autotrader 모듈들 때문에 검사가 무의미해지기 때문이다.
+"""
+import pathlib
+import subprocess
+import sys
+
+SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "check_stdlib_only.py"
+
+
+def test_runtime_core_works_without_third_party_packages():
+    assert SCRIPT.exists(), f"검사 스크립트가 없습니다: {SCRIPT}"
+    proc = subprocess.run([sys.executable, str(SCRIPT)],
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, (
+        "런타임 코어가 표준 라이브러리만으로 동작하지 않습니다.\n"
+        f"{proc.stdout}\n{proc.stderr}")
