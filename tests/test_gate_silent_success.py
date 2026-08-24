@@ -162,3 +162,55 @@ def test_bar_collected_today_kst_is_not_flagged_as_future():
             for d, o, h, l, c, v in bars_rows]
     rep = DataQualityChecker().check_bars("005930", bars)
     assert not any(i.code == "future_bar" for i in rep.issues)
+
+
+# ---- 인증 실패를 인증 실패라고 말하는가 -------------------------------
+
+def test_bad_credentials_give_a_clear_message_not_a_keyerror():
+    """키움은 인증에 실패해도 HTTP 200 을 준다.
+
+    곧바로 js["token"] 을 읽으면 `KeyError: 'token'` 이 나고, 사용자는 앱키가
+    틀렸는지 서버가 이상한지 우리 코드가 깨졌는지 알 수 없다.
+    """
+    pytest.importorskip("requests")
+    from autotrader.config import KiwoomConfig
+    from autotrader.data.base import DataError
+    from autotrader.data.kiwoom import KiwoomProvider
+
+    pr = KiwoomProvider.__new__(KiwoomProvider)
+    pr.config = KiwoomConfig(app_key="틀린키", app_secret="틀린시크릿")
+    pr._token = None
+
+    class R:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"return_code": 3, "return_msg": "유효하지 않은 AppKey입니다."}
+
+    pr._post = lambda *a, **k: R()
+    with pytest.raises(DataError) as exc:
+        pr._ensure_token()
+    msg = str(exc.value)
+    assert "인증 실패" in msg
+    assert "앱키" in msg, "무엇을 고쳐야 하는지 알려주지 않는다"
+    assert "KeyError" not in msg
+
+
+def test_token_response_without_a_token_field_is_also_caught():
+    """return_code 가 0 인데 토큰이 없는 응답도 있을 수 있다."""
+    pytest.importorskip("requests")
+    from autotrader.config import KiwoomConfig
+    from autotrader.data.base import DataError
+    from autotrader.data.kiwoom import KiwoomProvider
+
+    pr = KiwoomProvider.__new__(KiwoomProvider)
+    pr.config = KiwoomConfig(app_key="k", app_secret="s")
+    pr._token = None
+    pr._post = lambda *a, **k: type("R", (), {
+        "status_code": 200, "text": "",
+        "json": staticmethod(lambda: {"return_code": 0}),
+    })()
+    with pytest.raises(DataError):
+        pr._ensure_token()

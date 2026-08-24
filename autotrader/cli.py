@@ -150,9 +150,15 @@ def cmd_paper(args) -> int:
                         ensemble_threshold=args.threshold,
                         ensemble_min_votes=args.votes,
                         trail_pct=args.trail, dry_run=args.dry_run,
-                        registry=reg, validated_only=args.validated_only)
+                        registry=reg, validated_only=args.validated_only,
+                        order_log=args.order_log, state_path=args.state)
     trader.allow_pre_market = args.allow_pre_market
     trader.allow_after_market = args.allow_after_market
+    # 재시작 복구. 건너뛰면 이미 들고 있는 종목에 또 들어가고, 일일 진입
+    # 상한이 0 부터 다시 세어지고, 손절선을 몰라 스탑이 안 걸린다.
+    if args.state:
+        for note in trader.recover():
+            print(f"  {note}")
     if reg is not None:
         active = ", ".join(s_.name for s_ in trader.strategies) or "<none>"
         print(f"[REGISTRY] validated_only={args.validated_only}  active={active}")
@@ -164,6 +170,9 @@ def cmd_paper(args) -> int:
               f"closed={rep.closed_trades}")
         for line in rep.details[:5]:
             print(f"    · {line}")
+        # 매 사이클 끝에 남긴다. 종료 시점에만 저장하면 강제 종료·정전에서
+        # 그 사이 진입한 포지션의 손절선을 통째로 잃는다.
+        trader.save_state()
     acc = trader.tracker.report()
     if acc.n:
         print(f"\n예측 정확도: n={acc.n} 승률={acc.win_rate:.2f} "
@@ -461,6 +470,11 @@ def main(argv: Optional[list] = None) -> int:
     p_pp.add_argument("--registry", help="StrategyRegistry JSON 경로")
     p_pp.add_argument("--validated-only", action="store_true", default=False,
                       help="레지스트리에서 승인된 전략만 실행")
+    p_pp.add_argument("--state", default=None,
+                      help="재시작 복구용 상태 파일 (예: runs/state.json). 지정하면 "
+                           "손절선·일일카운터·쿨다운·EOD 수행여부가 재시작을 건넌다")
+    p_pp.add_argument("--order-log", default=None,
+                      help="미결 주문 장부 JSONL (예: runs/orders.jsonl)")
     p_pp.add_argument("--allow-pre-market", action="store_true", default=False,
                       help="NXT 프리마켓(08:00~08:59) 참여")
     p_pp.add_argument("--allow-after-market", action="store_true", default=False,

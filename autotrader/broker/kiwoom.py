@@ -76,8 +76,21 @@ class KiwoomBroker(Broker):
         if r.status_code != 200:
             raise BrokerError(f"Kiwoom 토큰 발급 실패 {r.status_code}: {r.text[:200]}")
         js = r.json()
+        # 키움은 인증에 실패해도 HTTP 200 을 준다. return_code 로만 구분된다.
+        # 곧바로 js["token"] 을 읽으면 KeyError: 'token' 이 나고, 사용자는
+        # 앱키가 틀렸는지 서버가 이상한지 우리 코드가 깨졌는지 알 수 없다.
+        code = js.get("return_code")
+        token = js.get("token") or js.get("access_token")
+        if code not in (None, 0) or not token:
+            msg = js.get("return_msg") or js.get("msg1") or "응답에 토큰이 없습니다"
+            raise BrokerError(
+                f"Kiwoom 인증 실패: {msg} (return_code={code})\n"
+                f"  · 앱키/시크릿이 맞는지 확인하세요 "
+                f"(환경변수 KIWOOM_APP_KEY / KIWOOM_APP_SECRET)\n"
+                f"  · 모의/실전 서버가 키와 맞는지 확인하세요 "
+                f"(지금 mode={'paper' if self.cfg.is_paper else 'real'})")
         # expires_dt 는 "만료일" 이지 "남은 초" 가 아니다 — config.kiwoom_token_ttl 참고.
-        self._token = _Token(js["token"], now + kiwoom_token_ttl(js))
+        self._token = _Token(token, now + kiwoom_token_ttl(js))
         return self._token.value
 
     def _headers(self, api_id: str) -> Dict[str, str]:
@@ -123,6 +136,11 @@ class KiwoomBroker(Broker):
                 continue
             sym = row.get("stk_cd", "").strip()
             avg = float(row.get("pur_pric", 0.0))
+            # opened_at 은 **모른다**. 브로커 잔고에는 진입 시각이 없다.
+            # 여기서 now_kst() 를 넣으면 매 조회마다 "방금 샀다" 가 되어
+            # 보유기간 청산이 영원히 안 걸리고, 청산 주문 id 도 매번 바뀐다.
+            # 진입 시각은 우리 기록에서 온다 — recovery.reconcile_positions 가
+            # 이 값을 덮어쓴다. 여기 값은 기록이 아예 없을 때의 대체값이다.
             out[sym] = Position(sym, qty, avg, now_kst())
         return out
 

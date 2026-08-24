@@ -19,9 +19,12 @@ from .broker.paper import PaperBroker
 from . import indicators as ind
 from .config import Config
 from .exits import evaluate_exit_live
+from .broker.base import BrokerError
 from .orderbook import OrderBook
 from .orders import OrderStatus, entry_order_id, exit_order_id
 from .portfolio import update_trailing_stop
+from .recovery import (SessionState, reconcile_positions,
+                       snapshot_positions)
 from .cooldown import CooldownRegistry
 from .data.base import DataProvider
 from .market import is_trading_day, is_extended_market_open, reason_closed, session_of
@@ -64,7 +67,8 @@ class LiveTrader:
                  dry_run: bool = True,
                  registry: Optional[StrategyRegistry] = None,
                  validated_only: bool = False,
-                 order_log: Optional[str] = None):
+                 order_log: Optional[str] = None,
+                 state_path: Optional[str] = None):
         self.provider = provider
         self.broker = broker
         self.config = config
@@ -103,6 +107,116 @@ class LiveTrader:
         # 주문 id 에 섞는 전략 식별자. 앙상블 구성이 바뀌면
         # 같은 종목·같은 시각이라도 다른 주문으로 본다.
         self.ensemble_name = "+".join(sorted(s_.name for s_ in self.strategies))
+        # 재시작을 건너뛰어야 하는 값들. 브로커에 물어볼 수 없는 것만 담는다.
+        self.state_path = state_path
+
+    # ---- 재시작 복구 ---------------------------------------------------
+
+    def recover(self, now: Optional[datetime] = None) -> List[str]:
+        """저장된 상태와 브로커 잔고를 합쳐 재시작 직후의 진실을 세운다.
+
+        브로커가 이기는 것: 종목 존재 여부, 수량, 평균매입가, 현금.
+        우리가 채우는 것: 손절가, 목표가, 트레일 폭, 진입 시각, 최고가.
+
+        브로커는 우리 손절선을 모른다. 복구하지 않으면 재시작 이후 그 포지션에는
+        **스탑이 영원히 걸리지 않는다.** 일일 진입 카운트도 0 부터 다시 세어져
+        상한이 하루에 두 번 열린다.
+
+        반환값은 사람이 읽어야 할 경고 목록이다. 조용히 넘기면 안 되는 것들만
+        담긴다 — 특히 "브로커에는 있는데 우리 기록에 없는 종목".
+        """
+        now = now or now_kst()
+        notes: List[str] = []
+        state = SessionState.load(self.state_path) if self.state_path else SessionState()
+
+        try:
+            broker_positions = self.broker.positions()
+        except Exception as exc:
+            # 잔고를 못 읽으면 복구가 불가능하다. 빈 상태로 매매를 시작하면
+            # 이미 들고 있는 종목에 또 들어간다 — 조용히 넘기면 안 된다.
+            raise BrokerError(f"복구 실패: 브로커 잔고를 읽을 수 없습니다 ({exc})")
+
+        res = reconcile_positions(broker_positions, state)
+        notes.extend(res.notes)
+        self.recovered_positions = res.positions
+
+        # 페이퍼는 포트폴리오가 우리 안에 있으므로 직접 되살린다.
+        if isinstance(self.broker, PaperBroker):
+            for sym, pos in res.positions.items():
+                self.broker.portfolio.positions[sym] = pos
+
+        # 리스크 카운터. 날짜가 바뀌었으면 이어받지 않는다 — 어제 카운트를
+        # 오늘로 가져오면 상한이 잘못된 방향으로 좁아진다.
+        today = now.date()
+        if state.day == today:
+            self.risk.state.day = today
+            self.risk.state.day_start_equity = state.day_start_equity
+            self.risk.state.day_realized_pnl = state.day_realized_pnl
+            self.risk.state.day_new_entries = state.day_new_entries
+            self._flat_done_for = state.flat_done_for
+            notes.append(
+                f"[복구] 오늘 진입 {state.day_new_entries}건 · "
+                f"실현손익 {state.day_realized_pnl:,.0f}원 이어받음")
+        elif state.day is not None:
+            notes.append(f"[복구] 저장된 상태는 {state.day} 자 — 오늘 카운터는 새로 시작")
+        self.risk.state.consecutive_losses = state.consecutive_losses
+        self.risk.state.cooldown_until = state.cooldown_until
+        self.cooldown.entries.update(state.cooldowns)
+
+        # 미결 주문. 장부는 생성자에서 이미 읽었다.
+        open_orders = self.book.open_orders()
+        if open_orders:
+            notes.append(f"[복구] 미결 주문 {len(open_orders)}건 — "
+                         f"체결 여부를 브로커에 확인해야 한다")
+        for note in notes:
+            log.info(note)
+        return notes
+
+    def save_state(self, now: Optional[datetime] = None) -> None:
+        """종료 전(그리고 매 사이클 끝에) 상태를 남긴다.
+
+        저장하지 않으면 다음 재시작에서 손절선이 사라진다.
+        """
+        if not self.state_path:
+            return
+        now = now or now_kst()
+        try:
+            positions = self.broker.positions()
+        except Exception:
+            positions = getattr(self, "recovered_positions", {}) or {}
+        st = SessionState(
+            day=self.risk.state.day,
+            day_start_equity=self.risk.state.day_start_equity,
+            day_realized_pnl=self.risk.state.day_realized_pnl,
+            day_new_entries=self.risk.state.day_new_entries,
+            consecutive_losses=self.risk.state.consecutive_losses,
+            cooldown_until=self.risk.state.cooldown_until,
+            flat_done_for=self._flat_done_for,
+            cooldowns=dict(self.cooldown.entries),
+            position_meta=snapshot_positions(
+                self.broker.portfolio.positions
+                if isinstance(self.broker, PaperBroker) else
+                self._merged_positions(positions)),
+        )
+        st.save(self.state_path)
+
+    def _merged_positions(self, broker_positions):
+        """실브로커 잔고에 우리가 아는 손절선 등을 다시 입힌 것.
+
+        브로커 잔고를 그대로 저장하면 stop_price 가 전부 None 이라, 저장할
+        때마다 손절선을 스스로 지우게 된다.
+        """
+        known = getattr(self, "recovered_positions", {}) or {}
+        out = {}
+        for sym, bp in broker_positions.items():
+            k = known.get(sym)
+            if k is None:
+                out[sym] = bp
+                continue
+            k.qty = bp.qty
+            k.avg_price = bp.avg_price
+            out[sym] = k
+        return out
 
     def _dispatch_real_exits(self, positions, now: datetime, report) -> int:
         """실브로커: 청산 조건에 걸린 포지션에 매도 주문을 낸다.

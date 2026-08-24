@@ -94,6 +94,9 @@ python -m autotrader --csv data/kiwoom --threshold 0.45 edge --bars 2500
 
 # 전략 승인 게이트
 python -m autotrader paper --registry runs/registry.json --validated-only
+
+# 재시작을 건너야 하는 상태(손절선·일일카운터·쿨다운)를 남기며 돌린다
+python -m autotrader paper --state runs/state.json --order-log runs/orders.jsonl
 ```
 
 **전역 옵션(`--csv` `--config` `--threshold` `--votes` `--trail`)은 하위 명령
