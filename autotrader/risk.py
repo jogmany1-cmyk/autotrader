@@ -60,10 +60,28 @@ class RiskEngine:
             self.state.cooldown_until = None
             self.state.consecutive_losses = 0
 
+    @staticmethod
+    def _gross_value(positions: Dict[str, Position],
+                     position_prices: Optional[Dict[str, float]]) -> float:
+        """보유 포지션의 현재 평가액 합계.
+
+        예전에는 **지금 판단 중인 후보 종목의 가격**을 보유 종목 전부에 곱했다.
+        7만원짜리 후보를 볼 때 5천원짜리 보유 10주가 70만원으로 계산된다 —
+        14배 과대평가다. 반대 방향이면 노출 한도가 열려 있어야 할 때 닫힌다.
+        어느 쪽이든 `max_gross_exposure` 가 의도한 값을 지키지 못한다.
+
+        종목별 시세를 주는 것이 원칙이고, 없으면 그 종목의 평균매입가로
+        떨어진다 (후보 가격을 쓰는 것보다 항상 낫다).
+        """
+        prices = position_prices or {}
+        return sum(p.qty * prices.get(sym, p.avg_price)
+                   for sym, p in positions.items())
+
     def evaluate_entry(self, *, symbol: str, price: float, stop_price: Optional[float],
                        equity: float, cash: float,
                        positions: Dict[str, Position], score: float = 1.0,
-                       last_bar_return: Optional[float] = None) -> RiskDecision:
+                       last_bar_return: Optional[float] = None,
+                       position_prices: Optional[Dict[str, float]] = None) -> RiskDecision:
         L = self.limits
         if price <= 0:
             return RiskDecision(False, 0, "price<=0")
@@ -88,8 +106,8 @@ class RiskEngine:
                 and last_bar_return >= L.chase_filter_pct):
             return RiskDecision(False, 0, f"chase-filter {last_bar_return*100:.1f}%")
 
-        gross_now = sum(p.qty * price for p in positions.values())  # 러프 estimate
-        if gross_now / equity > L.max_gross_exposure:
+        gross_now = self._gross_value(positions, position_prices)
+        if equity > 0 and gross_now / equity > L.max_gross_exposure:
             return RiskDecision(False, 0, "gross-exposure")
 
         # 사이징 1 : 1R 기준. stop 이 없으면 가격의 3% 를 임시 stop 으로 잡는다.

@@ -166,6 +166,7 @@ class Backtester:
                     equity=equity, cash=broker.cash(),
                     positions=positions, score=score,
                     last_bar_return=last_ret,
+                    position_prices={s: b.close for s, b in todays_bars.items()},
                 )
                 if not decision.allowed:
                     continue

@@ -21,7 +21,7 @@ from .config import Config
 from .cooldown import CooldownRegistry
 from .data.base import DataProvider
 from .market import is_trading_day, is_extended_market_open, reason_closed, session_of
-from .models import Bar, Order, Side
+from .models import Bar, Order, Side, Position
 from .risk import RiskEngine
 from .screener import Screener
 from .strategy import (DayBreakout, DayMomentum, DayPullback, Ensemble,
@@ -193,6 +193,7 @@ class LiveTrader:
                 symbol=cand.symbol, price=price, stop_price=dec.stop_hint,
                 equity=equity, cash=self.broker.cash(),
                 positions=positions, score=dec.score,
+                position_prices=prices,
             )
             if not decision.allowed:
                 report.orders_rejected += 1
@@ -213,6 +214,18 @@ class LiveTrader:
                 else:
                     self.broker.submit(order, price_hint=price)
                 report.orders_placed += 1
+                # 같은 사이클 안에서 즉시 반영한다. 이게 없으면 후보 10개가
+                # 전부 통과해 max_positions·gross_exposure·min_cash 가 한
+                # 사이클 동안 무력해진다 — 한도가 있으나 마나가 된다.
+                # 실브로커는 접수 ≠ 체결이므로 아직 positions() 에 안 뜬다.
+                # 그래서 브로커에 되묻지 않고 "주문 나간 것" 을 잠정 보유로
+                # 잡는다. 다음 사이클에 브로커 잔고가 이 값을 덮어쓴다.
+                positions[cand.symbol] = Position(
+                    symbol=cand.symbol, qty=decision.qty, avg_price=price,
+                    opened_at=now, stop_price=dec.stop_hint,
+                    take_price=dec.target_hint,
+                )
+                prices.setdefault(cand.symbol, price)
                 self.risk.register_entry()
                 self.tracker.record_entry(Prediction(
                     symbol=cand.symbol, entry_ts=now, entry_price=price,
@@ -270,6 +283,7 @@ class LiveTrader:
                     symbol=ev.symbol, price=price, stop_price=dec.stop_hint,
                     equity=equity, cash=self.broker.cash(),
                     positions=positions, score=dec.score,
+                    position_prices=prices,
                 )
                 if not decision.allowed:
                     report.orders_rejected += 1
