@@ -89,6 +89,9 @@ python -m autotrader fetch --cache data/kiwoom --symbol 005930 --limit 500
 python -m autotrader --csv data/kiwoom validate-data              # 전체 이력
 python -m autotrader --csv data/kiwoom validate-data --bars 2500  # 쓸 구간만
 
+# 진입 신호에 우위가 있는지 (청산 규칙 제외) — 전략을 고치기 전에 먼저
+python -m autotrader --csv data/kiwoom --threshold 0.45 edge --bars 2500
+
 # 전략 승인 게이트
 python -m autotrader paper --registry runs/registry.json --validated-only
 ```

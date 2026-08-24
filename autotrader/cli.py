@@ -298,6 +298,66 @@ def cmd_validate_data(args) -> int:
     return 0 if ok else 1
 
 
+def cmd_edge(args) -> int:
+    """진입 신호에 우위가 있는지 측정. 청산 규칙은 끄고 신호만 본다.
+
+    백테스트 성적이 나쁠 때 "진입이 문제인가, 청산이 문제인가" 를 가른다.
+    둘은 정반대의 대응을 요구하므로, 이걸 모르고 설정을 만지면 과최적화가 된다.
+    """
+    from .edge import EdgeAnalyzer
+
+    provider = _provider(args.csv)
+    cfg = _config(args.config, provider)
+    horizons = [int(x) for x in args.horizons.split(",") if x.strip()]
+    an = EdgeAnalyzer(provider, cfg, threshold=args.threshold,
+                      min_votes=args.votes, horizons=horizons,
+                      warmup=args.warmup)
+    rep = an.run(symbols=args.symbol, bars=args.bars)
+    if not rep.n_signals:
+        print(f"[EDGE] 신호가 하나도 없습니다 (임계 {args.threshold}). "
+              f"--threshold 를 낮춰 보세요.")
+        return 2
+
+    print(f"== 진입 신호 우위 측정 (임계 {rep.threshold}, "
+          f"봉 {args.bars or '전체'}) ==")
+    print(f"  {rep.summary()}")
+    print()
+    print(f"  {'지평선':>6}{'신호평균':>11}{'기준평균':>11}{'우위':>11}{'t값':>8}  판정")
+    print("  " + "-" * 56)
+    for h in rep.horizons:
+        print("  " + h.as_line())
+
+    if rep.buckets:
+        print()
+        print("  점수 구간별 (점수가 높을수록 수익이 커야 점수가 의미 있다)")
+        hs = [h.horizon for h in rep.horizons]
+        head = "".join(f"{h}일".rjust(10) for h in hs)
+        print(f"  {'구간':>13}{'건수':>6}{head}")
+        for b in rep.buckets:
+            means = "".join(f"{b.means[h]:>+9.2%}" for h in hs)
+            print(f"  {b.lo:.2f}~{b.hi:.2f}".rjust(15) + f"{b.n:>6}{means}")
+
+    if rep.adverse:
+        print()
+        print(f"  역행 비율 ({rep.adverse_horizon}일 안에 저가가 그만큼 밀린 신호)")
+        for lv, ratio in sorted(rep.adverse.items()):
+            print(f"    -{lv:.0%} 이하: {ratio:>6.1%}"
+                  + ("   ← 손절이 이 폭보다 좁으면 이길 자리에서 잘린다"
+                     if ratio >= 0.25 else ""))
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            json.dump(rep.as_dict(), fh, ensure_ascii=False, indent=2)
+        print(f"\n  → {args.output} 에 저장")
+
+    if args.min_t is not None:
+        ok = rep.best_t() >= args.min_t
+        print(f"\n  판정: {'PASS' if ok else 'FAIL'} "
+              f"(최대 t={rep.best_t():.2f}, 기준 {args.min_t})")
+        return 0 if ok else 1
+    return 0
+
+
 def cmd_schedule(args) -> int:
     """실전 자동매매 표준 크론잡 세트를 crontab 형식으로 출력.
     이 라인들을 `crontab -e` 로 등록하거나 systemd timer 로 변환해 쓴다."""
@@ -415,6 +475,21 @@ def main(argv: Optional[list] = None) -> int:
                       help="WARN 이 하나라도 있으면 실패 처리")
     p_vd.add_argument("--output", help="상세 리포트 JSON 저장 경로")
     p_vd.set_defaults(func=cmd_validate_data)
+
+    p_ed = sub.add_parser("edge",
+                          help="진입 신호에 우위가 있는지 측정 (청산 규칙 제외)")
+    p_ed.add_argument("--symbol", action="append",
+                      help="검사할 종목 (반복 지정). 미지정 시 유니버스 전체")
+    p_ed.add_argument("--bars", type=int, default=0,
+                      help="종목당 사용할 봉 수. 0(기본)이면 전체 이력")
+    p_ed.add_argument("--horizons", default="1,5,10,20",
+                      help="측정할 보유일수, 쉼표 구분 (기본 1,5,10,20)")
+    p_ed.add_argument("--warmup", type=int, default=250,
+                      help="지표 워밍업에 쓸 앞부분 봉 수 (기본 250)")
+    p_ed.add_argument("--min-t", type=float, default=None,
+                      help="이 t값 미만이면 종료코드 1. 지정 시 게이트로 동작")
+    p_ed.add_argument("--output", help="결과 JSON 저장 경로")
+    p_ed.set_defaults(func=cmd_edge)
 
     p_rec = sub.add_parser("reconcile", help="두 데이터 원천 대조로 누락 종목 감지")
     p_rec.add_argument("--primary", required=True, help="주 데이터 CSV 디렉터리 (예: KRX)")
