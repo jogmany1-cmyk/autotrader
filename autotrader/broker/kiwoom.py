@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from ..config import KiwoomConfig
+from ..config import KiwoomConfig, kiwoom_token_ttl
 from ..models import Fill, Order, Position, Side
 from .base import Broker, BrokerError
 from ..market import now_kst
@@ -75,9 +75,8 @@ class KiwoomBroker(Broker):
         if r.status_code != 200:
             raise BrokerError(f"Kiwoom 토큰 발급 실패 {r.status_code}: {r.text[:200]}")
         js = r.json()
-        # Kiwoom 토큰 유효기간은 응답 필드에 따르되, 없으면 12시간 기본.
-        ttl = int(js.get("expires_in") or js.get("expires_dt", 43200))
-        self._token = _Token(js["token"], now + ttl)
+        # expires_dt 는 "만료일" 이지 "남은 초" 가 아니다 — config.kiwoom_token_ttl 참고.
+        self._token = _Token(js["token"], now + kiwoom_token_ttl(js))
         return self._token.value
 
     def _headers(self, api_id: str) -> Dict[str, str]:

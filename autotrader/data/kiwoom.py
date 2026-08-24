@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from ..config import KiwoomConfig
+from ..config import KiwoomConfig, kiwoom_min_interval, kiwoom_token_ttl
 from ..market import now_kst
 from ..models import Bar
 from .base import DataError, DataProvider
@@ -83,10 +83,12 @@ class KiwoomProvider(DataProvider):
         # True 면 응답 본문 일부를 그대로 출력한다 (CLI --debug).
         # 요청 헤더는 절대 찍지 않는다 — appkey/secret 이 들어 있다.
         self.debug = False
-        # 키움 유량 제한: 실제 응답이 "유량=1" 이라고 알려줬다 (초당 1건).
+        # 유량 제한은 모드에 따라 다르다 (공식 문서 기준).
+        #   모의투자 : TR 1개당 1초 1회   → 1.1초
+        #   실서버   : 조회 TR 1초당 5회  → 0.25초
         # 연속조회는 한 종목에 최대 30페이지를 연달아 요청하므로, 대기 없이
-        # 몰아치면 첫 페이지부터 429 를 맞는다. 10% 여유를 둔다.
-        self.min_interval = 1.1
+        # 몰아치면 첫 페이지부터 429 를 맞는다.
+        self.min_interval = kiwoom_min_interval(config.is_paper)
         self._last_request_at = 0.0
         os.makedirs(cache_dir, exist_ok=True)
 
@@ -112,8 +114,8 @@ class KiwoomProvider(DataProvider):
         if r.status_code != 200:
             raise DataError(f"Kiwoom 토큰 발급 실패 {r.status_code}: {r.text[:200]}")
         js = r.json()
-        ttl = int(js.get("expires_in") or js.get("expires_dt", 43200))
-        self._token = _Token(js["token"], now + ttl)
+        # expires_dt 는 "만료일" 이지 "남은 초" 가 아니다 — config.kiwoom_token_ttl 참고.
+        self._token = _Token(js["token"], now + kiwoom_token_ttl(js))
         return self._token.value
 
     def _headers(self, api_id: str, cont_yn: str = "N",

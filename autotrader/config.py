@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field, asdict
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
@@ -199,3 +200,72 @@ def _merge(cfg: Config, raw: Dict[str, Any]) -> Config:
                     setattr(obj, k, v)
     _apply(cfg, raw)
     return cfg
+
+# ---------------------------------------------------------------- 키움 프로토콜
+# 아래 상수·함수는 키움 REST API 공식 문서에서 확인한 값이다. 추측이 아니다.
+# 두 어댑터(data/kiwoom.py · broker/kiwoom.py)가 같은 규칙을 쓰도록 한곳에 둔다.
+
+# 유량 제한 — 공식 문서 "API 호출 횟수 제한"
+#   실서버 국내주식 조회 TR : 1초당 5회   → 0.2초 간격 (+25% 여유)
+#   모의투자              : TR 1개당 1초 1회 → 1.0초 간격 (+10% 여유)
+KIWOOM_INTERVAL_REAL = 0.25
+KIWOOM_INTERVAL_PAPER = 1.1
+
+# 토큰 유효기간 상한 — 이보다 큰 값이 나오면 파싱이 잘못된 것으로 본다.
+_MAX_TOKEN_TTL = 7 * 24 * 3600.0
+_TOKEN_EXPIRY_FORMATS = ("%Y%m%d%H%M%S", "%Y-%m-%d %H:%M:%S", "%Y%m%d%H%M", "%Y%m%d")
+
+
+def kiwoom_min_interval(is_paper: bool) -> float:
+    """모드별 최소 요청 간격(초)."""
+    return KIWOOM_INTERVAL_PAPER if is_paper else KIWOOM_INTERVAL_REAL
+
+
+def kiwoom_token_ttl(payload: Dict[str, Any], now: Optional[datetime] = None,
+                     default: float = 43200.0) -> float:
+    """토큰 응답에서 남은 유효 시간(초)을 뽑는다.
+
+    공식 문서상 응답 필드는 `token` · `token_type` · **`expires_dt`(만료일)** 이다.
+    `expires_in`(남은 초) 같은 필드는 없다. 그런데 이전 코드는 둘을 구분하지 않고
+    이렇게 썼다.
+
+        ttl = int(js.get("expires_in") or js.get("expires_dt", 43200))
+
+    `expires_dt` 가 "20260825154600" 이면 int() 결과는 20조 초 — 약 64만 년이다.
+    그 값을 만료 시각으로 삼으니 토큰이 영원히 유효하다고 착각하고, 서버에서
+    실제로 만료된 뒤에도 재발급하지 않는다. 명령이 몇 초 만에 끝나는 CLI 에서는
+    드러나지 않지만, 크론으로 하루 종일 도는 LiveTrader 는 인증 실패로 멈춘다.
+
+    만료일은 한국시간으로 본다 (이 시스템의 시계가 KST 하나로 통일돼 있다).
+    파싱이 실패하거나 값이 상식 밖이면 보수적으로 `default` 를 쓴다 — 조금 일찍
+    재발급하는 것은 안전하지만, 늦게 재발급하는 것은 매매를 멈춘다.
+    """
+    from .market import now_kst          # 순환 임포트 방지를 위해 지역 임포트
+
+    raw_in = payload.get("expires_in")
+    if raw_in not in (None, ""):
+        try:
+            ttl = float(raw_in)
+            if 0 < ttl <= _MAX_TOKEN_TTL:
+                return ttl
+        except (TypeError, ValueError):
+            pass
+
+    raw_dt = payload.get("expires_dt")
+    if raw_dt not in (None, ""):
+        text = str(raw_dt).strip()
+        for fmt in _TOKEN_EXPIRY_FORMATS:
+            try:
+                expiry = datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+            # strptime 은 %m·%H·%M·%S 에서 1~2자리를 모두 허용한다. 그래서
+            # 12자리 문자열이 14자리 형식으로 조용히 잘못 파싱된다:
+            #   "202608251546" + "%Y%m%d%H%M%S" → 15:04:06  (15:46 이 아니다)
+            # 그럴듯한 값이 나와 눈치채기 어렵다. 되돌려 찍어 원문과 같을 때만
+            # 받아들인다.
+            if expiry.strftime(fmt) != text:
+                continue
+            ttl = (expiry - (now or now_kst())).total_seconds()
+            return ttl if 0 < ttl <= _MAX_TOKEN_TTL else default
+    return default
