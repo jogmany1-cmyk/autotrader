@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from ..config import KiwoomConfig, kiwoom_token_ttl
+from ..orders import BrokerOrder, ExecutionReport, OrderStatus
 from ..models import Fill, Order, Position, Side
 from .base import Broker, BrokerError
 from ..market import now_kst
@@ -126,7 +127,7 @@ class KiwoomBroker(Broker):
         return out
 
     # ---------------------------------------------------------------- 주문
-    def submit(self, order: Order, price_hint: float) -> Fill:
+    def submit(self, order: Order, price_hint: float) -> BrokerOrder:
         # Kiwoom 은 매수/매도가 서로 다른 api-id 를 사용.
         api_id = "kt10000" if order.side is Side.BUY else "kt10001"
         payload = {
@@ -142,21 +143,32 @@ class KiwoomBroker(Broker):
             data=json.dumps(payload),
             timeout=10,
         )
+        bo = BrokerOrder(
+            client_order_id=order.client_order_id,
+            symbol=order.symbol, side=order.side, qty=order.qty,
+            status=OrderStatus.SUBMITTED, tag=order.tag,
+        )
         if r.status_code != 200:
-            raise BrokerError(f"Kiwoom 주문 실패 {r.status_code}: {r.text[:200]}")
+            bo.transition(OrderStatus.REJECTED,
+                          reason=f"HTTP {r.status_code}: {r.text[:200]}")
+            return bo
         js = r.json()
         if js.get("return_code", 0) != 0:
-            raise BrokerError(f"Kiwoom 주문 거부: {js.get('return_msg')}")
-        # 접수 응답 — 실제 체결가는 통보 WebSocket 이나 조회로 확인.
-        return Fill(
-            ts=now_kst(),
-            symbol=order.symbol,
-            side=order.side,
-            qty=order.qty,
-            price=float(order.limit_price or price_hint),
-            fee=0.0, tax=0.0,
-            tag=order.tag or js.get("ord_no", ""),
-        )
+            # 거부는 예외가 아니라 상태다. 예외로 던지면 호출부가 "주문이
+            # 안 나갔다" 와 "브로커가 거부했다" 를 구분하지 못한다.
+            bo.transition(OrderStatus.REJECTED,
+                          reason=str(js.get("return_msg") or "거부"))
+            return bo
+        # 여기까지가 **접수**다. 체결이 아니다.
+        #
+        # 예전 코드는 이 자리에서 Fill 을 만들어 돌려줬다. 그러면 호가창에
+        # 걸려만 있는 주문, 100주 중 30주만 나간 부분체결, 증거금 부족으로
+        # 거부된 주문이 전부 "전량 체결" 로 기록된다. 포트폴리오는 있지도 않은
+        # 포지션을 들고 있다고 믿고, RiskEngine 은 그 허구 위에서 다음 진입을
+        # 판단한다. 실제 체결은 체결통보(WebSocket)나 주문조회로만 들어온다.
+        bo.broker_order_id = str(js.get("ord_no") or "") or None
+        bo.transition(OrderStatus.ACCEPTED)
+        return bo
 
     # ---------------------------------------------------------- 종목 마스터
     def list_stocks(self, market_code: str = "0") -> List[Dict[str, Any]]:

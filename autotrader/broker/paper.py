@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from ..config import Costs
+from ..orders import BrokerOrder, ExecutionReport, OrderStatus
 from ..models import Fill, Order, Position, Side, Trade
 from ..portfolio import Portfolio
 from .base import Broker, BrokerError
@@ -36,7 +37,7 @@ class PaperBroker(Broker):
                ts: Optional[datetime] = None,
                stop: Optional[float] = None,
                target: Optional[float] = None,
-               trail: Optional[float] = None) -> Fill:
+               trail: Optional[float] = None) -> BrokerOrder:
         ts = ts or now_kst()
         slip = self.costs.slippage_bp / 10_000
         if order.side is Side.BUY:
@@ -56,7 +57,21 @@ class PaperBroker(Broker):
         trade = self.portfolio.apply_fill(fill, stop=stop, target=target,
                                           trail=trail)
         self.fills.append(fill)
-        return fill
+        # 페이퍼는 즉시 전량 체결로 모델링한다 — 접수/체결을 나눌 필요가 없다.
+        # 그래도 반환 타입은 실브로커와 같게 맞춘다. 호출부가 두 브로커를
+        # 다르게 다루기 시작하면 페이퍼로 검증한 코드가 실계좌에서 안 돈다.
+        bo = BrokerOrder(
+            client_order_id=order.client_order_id,
+            symbol=order.symbol, side=order.side, qty=order.qty,
+            status=OrderStatus.SUBMITTED, tag=order.tag,
+        )
+        bo.apply(ExecutionReport(
+            broker_order_id=order.client_order_id, status=OrderStatus.FILLED,
+            filled_qty=fill.qty, price=fill.price, fee=fill.fee, tax=fill.tax,
+            ts=ts, exec_id=f"paper:{order.client_order_id}",
+        ))
+        self.last_trade = trade
+        return bo
 
     # --- 매 봉 후처리 -------------------------------------------------------
     def mark(self, bars: Dict[str, "BarLike"], ts: datetime,

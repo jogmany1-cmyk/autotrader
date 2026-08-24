@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import uuid
+
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from enum import Enum
@@ -69,8 +71,15 @@ class Order:
     type: OrderType = OrderType.MARKET
     limit_price: Optional[float] = None
     tag: str = ""
+    #: 우리가 붙이는 주문 식별자. 같은 신호로 두 번 주문이 나가는 것을 막는
+    #: 열쇠이며(중복 방지), 재시작 후 브로커 주문과 우리 기록을 잇는 끈이다.
+    #: 비워 두면 임의값이 들어간다 — 그러면 중복 방지가 동작하지 않으므로,
+    #: 실제 진입에서는 신호로부터 결정적으로 만들어 넣는다.
+    client_order_id: str = ""
 
     def __post_init__(self) -> None:
+        if not self.client_order_id:
+            self.client_order_id = f"auto-{uuid.uuid4().hex[:16]}"
         if self.qty <= 0:
             raise ValueError(f"주문 수량은 1 이상이어야 합니다: {self.qty}")
         if self.type is OrderType.LIMIT and self.limit_price is None:
