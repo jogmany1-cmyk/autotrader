@@ -137,6 +137,9 @@ def test_missing_trading_days_warns():
     assert "missing_trading_days" in _codes(rep)
     issue = next(i for i in rep.issues if i.code == "missing_trading_days")
     assert issue.severity == WARN and issue.count == 3
+    # 개수만으로는 고칠 수 없다 — 실제 날짜가 메시지에 있어야 한다.
+    for d in days[20:23]:
+        assert d.isoformat() in issue.detail
 
 
 def test_long_gap_is_called_out_separately():

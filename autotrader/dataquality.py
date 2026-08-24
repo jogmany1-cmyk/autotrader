@@ -55,6 +55,9 @@ _SPLIT_RATIOS: Tuple[float, ...] = (
 # 리포트 한 줄에 붙이는 표본 날짜 최대 개수.
 _MAX_SAMPLES = 3
 
+# 결측 거래일은 날짜 자체가 조치 대상이라 더 넉넉히 나열한다.
+_MAX_MISSING_LISTED = 12
+
 
 @dataclass
 class QualityLimits:
@@ -276,7 +279,8 @@ class DataQualityChecker:
         for b in bars:
             if b.day.year in _CALENDAR_YEARS and not is_trading_day(b.day):
                 out.append(Issue(sym, "bar_on_closed_day", WARN,
-                                 "휴장일(주말·공휴일)에 봉이 존재", b.day))
+                                 "휴장일로 등재된 날에 거래가 있음 — "
+                                 "market.KRX_HOLIDAYS 가 틀렸을 수 있다", b.day))
 
     def _check_gaps(self, sym: str, out: List[Issue], bars: Sequence[Bar]) -> None:
         """휴장일 표가 커버하는 구간에서만 결측 거래일을 센다."""
@@ -289,7 +293,7 @@ class DataQualityChecker:
                 f"{len(days) - len(checkable)}봉은 결측 검사 생략"))
         if len(checkable) < 2:
             return
-        total_missing = 0
+        missing_days: List[date] = []
         long_gaps: List[Tuple[date, int]] = []
         for prev, cur in zip(checkable, checkable[1:]):
             if (cur - prev).days <= 1:
@@ -298,15 +302,20 @@ class DataQualityChecker:
             missing = [d for d in missing if is_trading_day(d)]
             if not missing:
                 continue
-            total_missing += len(missing)
+            missing_days.extend(missing)
             if len(missing) >= self.limits.long_gap_days:
                 long_gaps.append((prev, len(missing)))
-        if total_missing:
+        if missing_days:
+            # 개수만 알려주면 고칠 수가 없다. 실제 날짜를 보고한다 — 이 목록이
+            # 곧 "휴장일 표가 틀렸을 수 있는 날" 이라서 바로 대조할 수 있다.
+            shown = ", ".join(d.isoformat() for d in missing_days[:_MAX_MISSING_LISTED])
+            more = ("" if len(missing_days) <= _MAX_MISSING_LISTED
+                    else f" 외 {len(missing_days) - _MAX_MISSING_LISTED}일")
             out.append(Issue(
                 sym, "missing_trading_days", WARN,
-                f"거래일인데 봉이 없는 날 {total_missing}일 "
-                f"({checkable[0]}~{checkable[-1]} 구간)", checkable[0],
-                count=total_missing))
+                f"거래일인데 봉이 없는 날 {len(missing_days)}일: {shown}{more}",
+                missing_days[0], count=len(missing_days),
+                samples=tuple(missing_days[:_MAX_SAMPLES])))
         for start, n in long_gaps:
             out.append(Issue(sym, "long_gap", WARN,
                              f"{n}거래일 연속 결측 (거래정지 의심)", start))
