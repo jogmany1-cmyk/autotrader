@@ -104,7 +104,11 @@ end-to-end smoke (screen → backtest → paper), and — when a price cache exi
 `validate-data`. It reports every failure at once and exits non-zero if any step
 fails. Point it at another cache with `CACHE=data/kospi ./scripts/verify.sh`.
 GitHub Actions (`.github/workflows/verify.yml`) runs this exact script on
-Python 3.9 / 3.11 / 3.13 for every push, so local and CI never diverge.
+Python 3.9 / 3.11 / 3.13 for every push, so local and CI never diverge. A second
+job installs `.[live,dev]` and runs the full suite, because the vendor-adapter
+tests skip themselves when `requests` is absent (`tests/_optional.py`) — without
+that job they would never run anywhere. In a bare environment `pytest -q` is
+130 passed + 10 skipped; with `requests` installed it is 140 passed.
 
 The stdlib-only rule above is enforced by `scripts/check_stdlib_only.py`, not by
 trust: it blocks `numpy`/`pandas`/`requests`/`websockets`/`yaml` at the import

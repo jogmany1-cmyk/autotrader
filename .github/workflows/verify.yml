@@ -11,7 +11,10 @@ on:
   workflow_dispatch:
 
 jobs:
+  # 맨 환경 — 런타임 코어가 표준 라이브러리만으로 도는지 확인하는 자리.
+  # requests·yaml·numpy 를 일부러 설치하지 않는다.
   verify:
+    name: verify (맨 환경)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false          # 3.9 만 깨지는지, 전 버전이 깨지는지 한 번에 본다
@@ -25,8 +28,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # 테스트 러너만 깐다. requests·yaml·numpy 를 일부러 넣지 않는 것이
-      # 이 잡의 핵심 — 런타임 코어가 그것들 없이 도는지 확인하는 자리다.
       - name: Install test runner only
         run: |
           python -m pip install --upgrade pip
@@ -39,3 +40,35 @@ jobs:
 
       - name: Verify
         run: ./scripts/verify.sh
+
+  # 선택적 의존성이 깔린 환경 — 벤더 어댑터(키움·KIS) 테스트가 실제로 돈다.
+  # 이 잡이 없으면 어댑터 테스트는 CI 어디서도 실행되지 않고 조용히 썩는다.
+  vendor-adapters:
+    name: vendor adapters (requests 포함)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 선언한 extra 를 그대로 설치한다 — pyproject 의 extra 정의가 실제로
+      # 맞는지도 함께 검증된다.
+      - name: Install with optional extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[live,dev]"
+          pip list
+
+      # requests 가 깔렸는데도 어댑터 테스트가 건너뛰어지면 표식이 잘못 붙은
+      # 것이다. 그 경우 조용히 초록불이 뜨지 않도록 여기서 실패시킨다.
+      - name: Full suite — adapter tests must actually run
+        run: |
+          set -eo pipefail
+          python -m pytest -q -rs 2>&1 | tee /tmp/pytest.log
+          if grep -q "requests 미설치" /tmp/pytest.log; then
+            echo "::error::requests 가 설치됐는데도 벤더 어댑터 테스트가 건너뛰어졌습니다"
+            exit 1
+          fi

@@ -12,6 +12,8 @@ from autotrader.data.base import DataError, DataProvider
 from autotrader.data.kiwoom import _merge_bars
 from autotrader.models import Bar
 
+from tests._optional import requires_requests
+
 
 def test_missing_credentials_raise_dataerror():
     with tempfile.TemporaryDirectory() as d:
@@ -19,6 +21,7 @@ def test_missing_credentials_raise_dataerror():
             KiwoomProvider(KiwoomConfig(), cache_dir=d)
 
 
+@requires_requests
 def test_selects_paper_url_by_default():
     with tempfile.TemporaryDirectory() as d:
         kp = KiwoomProvider(KiwoomConfig(app_key="x", app_secret="y"),
@@ -26,6 +29,7 @@ def test_selects_paper_url_by_default():
         assert "mockapi" in kp.base
 
 
+@requires_requests
 def test_selects_real_url_when_not_paper():
     with tempfile.TemporaryDirectory() as d:
         kp = KiwoomProvider(KiwoomConfig(app_key="x", app_secret="y",
@@ -34,6 +38,7 @@ def test_selects_real_url_when_not_paper():
         assert kp.base.startswith("https://api.kiwoom.com")
 
 
+@requires_requests
 def test_conforms_to_dataprovider_interface():
     with tempfile.TemporaryDirectory() as d:
         kp = KiwoomProvider(KiwoomConfig(app_key="x", app_secret="y"),
@@ -41,6 +46,7 @@ def test_conforms_to_dataprovider_interface():
         assert isinstance(kp, DataProvider)
 
 
+@requires_requests
 def test_cache_dir_is_created():
     with tempfile.TemporaryDirectory() as d:
         target = os.path.join(d, "nested", "kiwoom")
@@ -62,6 +68,7 @@ def test_merge_deduplicates_by_date_and_prefers_fresh():
     assert merged[0].ts < merged[1].ts
 
 
+@requires_requests
 def test_cache_roundtrip_reads_previously_written_bars():
     with tempfile.TemporaryDirectory() as d:
         # 캐시 파일을 미리 만들어두고 provider 가 읽을 수 있는지

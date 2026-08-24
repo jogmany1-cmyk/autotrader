@@ -8,6 +8,8 @@ import pytest
 from autotrader import jobs
 from autotrader.data.krx_universe import KrxUniverse, UniverseSnapshot
 
+from tests._optional import requires_requests
+
 
 # --- KRX 유니버스 ------------------------------------------------------
 
@@ -84,6 +86,7 @@ def test_all_registered_jobs_have_callables():
 
 # --- KiwoomProvider 분봉 검증 (인터페이스만) ---------------------------
 
+@requires_requests
 def test_kiwoom_provider_history_minutes_rejects_bad_interval():
     from autotrader.config import KiwoomConfig
     from autotrader.data import KiwoomProvider
@@ -95,6 +98,7 @@ def test_kiwoom_provider_history_minutes_rejects_bad_interval():
             kp.history_minutes("005930", interval=7)  # 지원 안 되는 간격
 
 
+@requires_requests
 def test_kiwoom_provider_has_refresh_minutes_method():
     from autotrader.config import KiwoomConfig
     from autotrader.data import KiwoomProvider

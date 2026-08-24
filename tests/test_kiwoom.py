@@ -10,6 +10,8 @@ from autotrader.broker import KiwoomBroker
 from autotrader.broker.base import Broker, BrokerError
 from autotrader.config import Config, KiwoomConfig
 
+from tests._optional import requires_requests
+
 
 def test_kiwoom_config_from_env_reads_env_vars(monkeypatch):
     monkeypatch.setenv("KIWOOM_APP_KEY", "K")
@@ -33,18 +35,21 @@ def test_kiwoom_broker_rejects_missing_credentials():
             KiwoomBroker(KiwoomConfig(**kw))
 
 
+@requires_requests
 def test_kiwoom_broker_picks_paper_url_when_paper_true():
     kb = KiwoomBroker(KiwoomConfig(app_key="x", app_secret="y",
                                    account_number="z", is_paper=True))
     assert "mockapi" in kb.base
 
 
+@requires_requests
 def test_kiwoom_broker_picks_real_url_when_paper_false():
     kb = KiwoomBroker(KiwoomConfig(app_key="x", app_secret="y",
                                    account_number="z", is_paper=False))
     assert kb.base.startswith("https://api.kiwoom.com")
 
 
+@requires_requests
 def test_kiwoom_broker_conforms_to_broker_abstract():
     kb = KiwoomBroker(KiwoomConfig(app_key="x", app_secret="y", account_number="z"))
     assert isinstance(kb, Broker)
