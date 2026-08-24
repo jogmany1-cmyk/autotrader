@@ -93,3 +93,4 @@ class Portfolio:
                 trailing = pos.highest_close * (1 - trail_pct)
                 if pos.stop_price is None or trailing > pos.stop_price:
                     pos.stop_price = trailing
+                    pos.stop_from_trail = True

@@ -62,14 +62,17 @@ class PaperBroker(Broker):
              hard_stop_pct: float = 0.0) -> List[Trade]:
         """각 종목의 당일 봉을 받아 스탑/타깃/시간 청산을 트리거.
 
-        우선순위: hard_stop → stop → target → time. hard_stop 은 개별 전략
-        스탑과 무관하게 계좌 보호를 위한 최종선(예: -10%). 갭다운으로 스탑
+        우선순위: hard_stop → stop/trail → target → time. hard_stop 은 개별
+        전략 스탑과 무관하게 계좌 보호를 위한 최종선(예: -10%). 갭다운으로 스탑
         아래에서 열린 경우 시가로 체결한다.
+
+        스탑 청산은 출처에 따라 두 사유로 나뉜다. `stop` 은 전략이 진입 시점에
+        정한 초기 손절이고, `trail` 은 트레일링이 끌어올린 스탑이다. 트레일링은
+        `stop_price` 를 덮어쓰기 때문에, 구분하지 않으면 무엇이 포지션을 끊었는지
+        알 수 없다 — 실제로 이 때문에 "ATR 손절이 너무 좁다" 는 오진이 났다.
         """
         closed: List[Trade] = []
         prices = {s: b.close for s, b in bars.items()}
-        if trail_pct > 0:
-            self.portfolio.update_trailing(prices, trail_pct)
         for sym in list(self.portfolio.positions.keys()):
             pos = self.portfolio.positions[sym]
             bar = bars.get(sym)
@@ -83,7 +86,10 @@ class PaperBroker(Broker):
                 reason = "hard_stop"
             elif pos.stop_price is not None and bar.low <= pos.stop_price:
                 exit_price = min(pos.stop_price, bar.open)
-                reason = "stop"
+                # 트레일링이 끌어올린 스탑과 전략이 정한 초기 손절은 성격이
+                # 다르다. 하나로 기록하면 무엇이 포지션을 끊었는지 알 수 없다.
+                # 쿨다운도 둘을 다르게 취급한다(trail 은 면제).
+                reason = "trail" if pos.stop_from_trail else "stop"
             elif pos.take_price is not None and bar.high >= pos.take_price:
                 exit_price = max(pos.take_price, bar.open)
                 reason = "target"
@@ -96,6 +102,16 @@ class PaperBroker(Broker):
             trade = self._sell_at(order, exit_price, ts)
             if trade:
                 closed.append(trade)
+        # 트레일링은 청산 판정이 **끝난 뒤** 갱신한다.
+        #
+        # 이전에는 판정 전에 갱신해서, 오늘 종가로 계산한 스탑을 오늘 저가에
+        # 적용했다. 하루 내내 오르기만 한 봉(시가 100 → 종가 120)에서도 종가로
+        # 세운 스탑 108 이 그날 저가 100 에 걸려 손실 청산이 기록됐다. 종가가
+        # 나오기 전에 그 스탑을 세울 수 없으므로 미래 정보다 — CLAUDE.md 의
+        # 첫 번째 불변조건 위반이다. 갱신을 뒤로 옮기면 새 스탑은 다음 봉부터
+        # 유효해진다.
+        if trail_pct > 0:
+            self.portfolio.update_trailing(prices, trail_pct)
         self.portfolio.bump_hold_counters()
         return closed
 

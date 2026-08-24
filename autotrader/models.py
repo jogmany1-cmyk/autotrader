@@ -110,6 +110,10 @@ class Position:
     take_price: Optional[float] = None
     highest_close: float = 0.0
     bars_held: int = 0
+    # stop_price 가 트레일링으로 끌어올려진 값인지. 청산 사유를 "stop"(초기 손절)
+    # 과 "trail"(트레일링)로 구분하는 데 쓴다. 둘을 섞어 기록하면 무엇이 포지션을
+    # 끊었는지 알 수 없고, 실제로 그 때문에 오진이 났다.
+    stop_from_trail: bool = False
     meta: Dict[str, float] = field(default_factory=dict)
 
     def market_value(self, price: float) -> float:
