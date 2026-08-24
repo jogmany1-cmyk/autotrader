@@ -35,7 +35,8 @@ class PaperBroker(Broker):
     def submit(self, order: Order, price_hint: float,
                ts: Optional[datetime] = None,
                stop: Optional[float] = None,
-               target: Optional[float] = None) -> Fill:
+               target: Optional[float] = None,
+               trail: Optional[float] = None) -> Fill:
         ts = ts or now_kst()
         slip = self.costs.slippage_bp / 10_000
         if order.side is Side.BUY:
@@ -52,7 +53,8 @@ class PaperBroker(Broker):
         cost = fill.cost
         if order.side is Side.BUY and cost > self.portfolio.cash + 1e-6:
             raise BrokerError(f"cash insufficient: need {cost:.0f}, have {self.portfolio.cash:.0f}")
-        trade = self.portfolio.apply_fill(fill, stop=stop, target=target)
+        trade = self.portfolio.apply_fill(fill, stop=stop, target=target,
+                                          trail=trail)
         self.fills.append(fill)
         return fill
 

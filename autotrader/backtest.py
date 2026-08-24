@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .broker import PaperBroker
+from . import indicators as ind
 from .config import Config
 from .cooldown import CooldownRegistry
 from .data.base import DataProvider
@@ -158,6 +159,8 @@ class Backtester:
                     broker.submit(
                         Order(sym, Side.BUY, decision.qty, tag=tag),
                         price_hint=price, ts=ts, stop=stop, target=target,
+                        trail=_atr_trail(sym_bars, sym_idx, price,
+                                         self.config.execution),
                     )
                     risk.register_entry()
                     tracker.record_entry(Prediction(
@@ -273,3 +276,27 @@ def _in_slice(ts: datetime, points: List[EquityPoint], sl: slice) -> bool:
     lo = points[sl.start].ts if sl.start < len(points) else points[-1].ts
     hi = points[sl.stop - 1].ts if 0 < sl.stop <= len(points) else points[-1].ts
     return lo <= ts <= hi
+
+
+def _atr_trail(bars: Sequence[Bar], idx: Optional[int], price: float,
+               execution) -> Optional[float]:
+    """진입 시점 ATR 로 이 포지션의 트레일링 폭을 정한다.
+
+    고정 %는 종목별 변동성을 무시해서, 변동성이 큰 종목에서는 정상적인 흔들림에도
+    잘려나간다. 배수(`trail_atr_mult`)는 관측이 아니라 원리로 정했다 —
+    자세한 유도는 `config.ExecutionCfg` 주석 참고.
+
+    ATR 은 판단 봉까지만 쓴다(`bars[:idx+1]`). 미래 정보 금지.
+    """
+    mult = getattr(execution, "trail_atr_mult", 0.0)
+    if not mult or idx is None or price <= 0:
+        return None
+    window = bars[:idx + 1]
+    period = getattr(execution, "trail_atr_period", 14)
+    if len(window) < period + 1:
+        return None
+    series = ind.atr(window, period)
+    val = series[-1] if series else None
+    if not val or val <= 0:
+        return None
+    return (mult * val) / price

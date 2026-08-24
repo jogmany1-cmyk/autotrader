@@ -27,22 +27,25 @@ class Portfolio:
 
     def apply_fill(self, fill: Fill,
                    stop: Optional[float] = None,
-                   target: Optional[float] = None) -> Optional[Trade]:
+                   target: Optional[float] = None,
+                   trail: Optional[float] = None) -> Optional[Trade]:
         """체결 하나를 반영하고, 이번 체결이 라운드 트립을 완료했다면 Trade 를 리턴."""
         self.cash -= fill.cost
         if fill.side is Side.BUY:
-            self._apply_buy(fill, stop, target)
+            self._apply_buy(fill, stop, target, trail)
             return None
         return self._apply_sell(fill)
 
-    def _apply_buy(self, fill: Fill, stop: Optional[float], target: Optional[float]) -> None:
+    def _apply_buy(self, fill: Fill, stop: Optional[float],
+                   target: Optional[float],
+                   trail: Optional[float] = None) -> None:
         pos = self.positions.get(fill.symbol)
         if pos is None:
             self.positions[fill.symbol] = Position(
                 symbol=fill.symbol, qty=fill.qty,
                 avg_price=(fill.gross + fill.fee) / fill.qty,
                 opened_at=fill.ts, stop_price=stop, take_price=target,
-                highest_close=fill.price,
+                highest_close=fill.price, trail_pct=trail,
             )
             return
         # 추가 매수: 가중평균 단가 갱신, 스탑은 유지(더 높인 것만 반영)
@@ -90,7 +93,9 @@ class Portfolio:
                 continue
             if price > pos.highest_close:
                 pos.highest_close = price
-                trailing = pos.highest_close * (1 - trail_pct)
+                # 포지션별 폭이 있으면 그것을 쓴다 (진입 시점 ATR 기반).
+                width = pos.trail_pct if pos.trail_pct is not None else trail_pct
+                trailing = pos.highest_close * (1 - width)
                 if pos.stop_price is None or trailing > pos.stop_price:
                     pos.stop_price = trailing
                     pos.stop_from_trail = True

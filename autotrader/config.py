@@ -91,6 +91,18 @@ class ExecutionCfg:
     order_type: str = "MARKET"              # MARKET | LIMIT
     limit_offset_bp: float = 20.0           # LIMIT 시 종가 대비 오프셋
     max_holding_bars: int = 20              # 강제 청산까지 최대 보유 봉수
+    # 트레일링 폭을 변동성에 맞춘다. 고정 %는 종목마다 다른 변동성을 무시해서,
+    # 변동성이 큰 종목에서는 정상적인 흔들림에도 잘려나간다.
+    #
+    # 배수는 관측이 아니라 원리로 정했다. `autotrader edge` 측정상 진입 신호는
+    # 10일 지평선에서 유의했다(t=2.81). 가격 변동폭은 대략 기간의 제곱근에
+    # 비례하므로, 10일을 견디려면 √10 ≈ 3.16 배의 일일 ATR 이 필요하다.
+    # (측정된 일일 ATR 이 종가의 3.35% 였으니 약 10.6% 에 해당한다. 종전
+    # 고정값 5% 는 1.5×ATR, 즉 이틀치 변동밖에 못 견뎠다.)
+    #
+    # 0 이면 이 기능을 끄고 고정 trail_pct 를 쓴다.
+    trail_atr_mult: float = 10 ** 0.5
+    trail_atr_period: int = 14
     # 데이트레이딩 규율 (v0.8): 이 시각(HH:MM, KST)이 되면 보유 전량을 일괄 청산.
     # None 이면 비활성. 밤 사이 갭·이벤트 리스크를 회피하는 정석적 방어.
     flat_at_time: str | None = None

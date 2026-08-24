@@ -114,6 +114,9 @@ class Position:
     # 과 "trail"(트레일링)로 구분하는 데 쓴다. 둘을 섞어 기록하면 무엇이 포지션을
     # 끊었는지 알 수 없고, 실제로 그 때문에 오진이 났다.
     stop_from_trail: bool = False
+    # 이 포지션 전용 트레일링 폭(비율). None 이면 계좌 기본값을 쓴다.
+    # 진입 시점 ATR 로 계산해 종목별 변동성을 반영한다.
+    trail_pct: Optional[float] = None
     meta: Dict[str, float] = field(default_factory=dict)
 
     def market_value(self, price: float) -> float:
