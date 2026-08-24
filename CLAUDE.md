@@ -92,11 +92,18 @@ python -m autotrader backtest --threshold 0.45
 ### Testing
 
 ```bash
+./scripts/verify.sh            # everything at once — run this before pushing
 pip install pytest             # optional dep
 pytest -q                      # entire suite (currently ~139 tests)
 pytest tests/test_backtest.py  # one file
 pytest -q -k "cost_audit"      # keyword filter
 ```
+
+`scripts/verify.sh` runs the unit tests, the synthetic end-to-end smoke (screen →
+backtest → paper), and — when a price cache exists — `validate-data`. It reports
+every failure at once and exits non-zero if any step fails, so it drops straight
+into CI or a pre-push hook. Point it at another cache with
+`CACHE=data/kospi ./scripts/verify.sh`.
 
 There is no separate lint/typecheck tooling wired up. Keep runtime code stdlib-only unless explicitly needed — the core (models, indicators, strategies, backtest, risk, portfolio, live, streaming) must work without `numpy`/`pandas`/`requests` because tests rely on that.
 

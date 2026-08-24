@@ -5,5 +5,8 @@ __pycache__/
 .venv/
 state/
 runs/
+# 수집한 시세 캐시 — fetch 의 기본 경로(./data/kiwoom). 유니버스 전체를
+# 수집하면 CSV 가 수천 개 생기므로 저장소에 들어가면 안 된다.
+data/
 config.yaml
 .env

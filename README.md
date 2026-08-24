@@ -85,6 +85,9 @@ pip install requests    # 선택 의존성
 ```bash
 pip install pytest
 pytest -q
+
+# 또는 푸시 전 한 번에 (테스트 + 합성 스모크 + 데이터 무결성)
+./scripts/verify.sh
 ```
 
 139개 테스트가 지표·데이터·데이터무결성·전략·리스크·포트폴리오·브로커·백테스트·스크리너·성과지표를 검증합니다.
