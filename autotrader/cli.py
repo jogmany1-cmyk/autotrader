@@ -50,7 +50,8 @@ def cmd_backtest(args) -> int:
     bt = Backtester(provider, cfg,
                     ensemble_threshold=args.threshold,
                     ensemble_min_votes=args.votes,
-                    trail_pct=args.trail)
+                    trail_pct=args.trail,
+                    history_bars=args.bars)
     rep = bt.run()
     print("== 전체 성과 =====================================")
     _dump_report(rep.all)
@@ -358,6 +359,9 @@ def main(argv: Optional[list] = None) -> int:
 
     p_bt = sub.add_parser("backtest")
     p_bt.add_argument("--output", help="결과 JSON 파일 경로")
+    p_bt.add_argument("--bars", type=int, default=None,
+                      help="종목당 사용할 봉 수 = 백테스트 구간. "
+                           "0 이면 있는 데이터 전부. 미지정 시 1000봉(약 4년)")
     p_bt.set_defaults(func=cmd_backtest)
 
     p_sc = sub.add_parser("screen")

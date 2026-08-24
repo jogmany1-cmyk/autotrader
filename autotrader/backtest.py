@@ -48,9 +48,13 @@ class Backtester:
                  strategies: Optional[Sequence[Strategy]] = None,
                  ensemble_threshold: float = 0.55,
                  ensemble_min_votes: int = 1,
-                 trail_pct: float = 0.05):
+                 trail_pct: float = 0.05,
+                 history_bars: Optional[int] = None):
         self.provider = provider
         self.config = config
+        # 종목당 불러올 봉 수. None 이면 기존 기본값(lookback_days × 4)을 쓴다.
+        # 0 이면 있는 데이터 전부. 이 값이 곧 백테스트 구간의 길이가 된다.
+        self.history_bars = history_bars
         self.strategies = list(strategies) if strategies else self._default_strategies()
         self.ensemble = Ensemble(self.strategies, config.weights,
                                  threshold=ensemble_threshold,
@@ -72,10 +76,17 @@ class Backtester:
         symbols = list(symbols) if symbols else (u.symbols or self.provider.universe())
 
         # 1) 데이터 로딩과 시간축 정렬
+        #
+        # 종목당 몇 봉을 쓸지가 곧 백테스트 구간이다. 기본값 lookback_days × 4 는
+        # "지표 워밍업(250봉) + 그 3배의 검증 구간" 이라는 뜻이지만, 40년치를
+        # 수집해 놓고도 1,000봉만 쓰고 91% 를 버리게 된다. history_bars 로
+        # 덮어쓸 수 있고, 0 이면 있는 데이터를 전부 쓴다.
+        limit = (u.lookback_days * 4 if self.history_bars is None
+                 else self.history_bars)
         bars_by_symbol: Dict[str, List[Bar]] = {}
         for s in symbols:
             try:
-                bars_by_symbol[s] = self.provider.history(s, limit=u.lookback_days * 4)
+                bars_by_symbol[s] = self.provider.history(s, limit=limit)
             except Exception:
                 continue
         symbols = list(bars_by_symbol.keys())
