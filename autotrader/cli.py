@@ -327,12 +327,18 @@ def cmd_edge(args) -> int:
     백테스트 성적이 나쁠 때 "진입이 문제인가, 청산이 문제인가" 를 가른다.
     둘은 정반대의 대응을 요구하므로, 이걸 모르고 설정을 만지면 과최적화가 된다.
     """
-    from .edge import EdgeAnalyzer
+    from .edge import EdgeAnalyzer, default_ensemble
 
     provider = _provider(args.csv)
     cfg = _config(args.config, provider)
     horizons = [int(x) for x in args.horizons.split(",") if x.strip()]
-    an = EdgeAnalyzer(provider, cfg, threshold=args.threshold,
+    try:
+        ens = default_ensemble(cfg, args.threshold, args.votes,
+                               only=args.strategy)
+    except ValueError as exc:
+        print(f"[ERROR] {exc}")
+        return 2
+    an = EdgeAnalyzer(provider, cfg, ensemble=ens, threshold=args.threshold,
                       min_votes=args.votes, horizons=horizons,
                       warmup=args.warmup)
     rep = an.run(symbols=args.symbol, bars=args.bars)
@@ -341,8 +347,17 @@ def cmd_edge(args) -> int:
               f"--threshold 를 낮춰 보세요.")
         return 2
 
+    from .edge import STRATEGY_NAMES
+
     print(f"== 진입 신호 우위 측정 (임계 {rep.threshold}, "
           f"봉 {args.bars or '전체'}) ==")
+    if len(rep.strategies) < len(STRATEGY_NAMES):
+        # 격리 측정임을 눈에 띄게 남긴다. 하나만 켠 결과를 전체 앙상블 결과로
+        # 착각하면 엉뚱한 전략을 고치게 된다.
+        print(f"  [격리] 전략 {len(rep.strategies)}개만 켬: "
+              f"{', '.join(rep.strategies) or '<없음>'}")
+        print("         점수 = 이 전략들의 가중평균이라 전체 앙상블과 "
+              "같은 임계값이라도 의미가 다르다.")
     print(f"  {rep.summary()}")
     print()
     print(f"  {'지평선':>6}{'신호평균':>11}{'기준평균':>11}{'우위':>11}{'t값':>8}  판정")
@@ -512,6 +527,11 @@ def main(argv: Optional[list] = None) -> int:
                           help="진입 신호에 우위가 있는지 측정 (청산 규칙 제외)")
     p_ed.add_argument("--symbol", action="append",
                       help="검사할 종목 (반복 지정). 미지정 시 유니버스 전체")
+    p_ed.add_argument("--strategy", action="append",
+                      help="이 전략만 켜고 측정 (반복 지정). 미지정 시 전체 앙상블. "
+                           "앙상블이 지고 있을 때 어느 전략이 주범인지 가른다. "
+                           "가능: day_breakout, day_pullback, day_momentum, "
+                           "swing_trend, mean_reversion")
     p_ed.add_argument("--bars", type=int, default=0,
                       help="종목당 사용할 봉 수. 0(기본)이면 전체 이력")
     p_ed.add_argument("--horizons", default="1,5,10,20",

@@ -139,6 +139,9 @@ class EdgeReport:
     buckets: List[ScoreBucket] = field(default_factory=list)
     adverse: Dict[float, float] = field(default_factory=dict)  # 기준 → 비율
     adverse_horizon: int = 0
+    # 이 측정에 참여한 전략. 격리 측정(--strategy)한 결과를 나중에 전체 앙상블
+    # 결과와 혼동하지 않도록 리포트와 JSON 양쪽에 남긴다.
+    strategies: List[str] = field(default_factory=list)
 
     @property
     def signal_rate(self) -> float:
@@ -171,6 +174,7 @@ class EdgeReport:
     def as_dict(self) -> Dict:
         return {"n_bars": self.n_bars, "n_signals": self.n_signals,
                 "threshold": self.threshold, "signal_rate": self.signal_rate,
+                "strategies": list(self.strategies),
                 "horizons": [h.as_dict() for h in self.horizons],
                 "buckets": [{"lo": b.lo, "hi": b.hi, "n": b.n,
                              "means": {str(k): v for k, v in b.means.items()}}
@@ -179,11 +183,37 @@ class EdgeReport:
                 "adverse": {str(k): v for k, v in self.adverse.items()}}
 
 
-def default_ensemble(config: Config, threshold: float, min_votes: int = 1) -> Ensemble:
-    """백테스터와 같은 전략 구성. 둘이 갈라지면 측정이 무의미해진다."""
-    return Ensemble([DayBreakout(), DayPullback(), DayMomentum(), SwingTrend(),
-                     MeanReversion()], config.weights,
-                    threshold=threshold, min_votes=min_votes)
+# 앙상블에 들어가는 전략 이름. Ensemble 이 weights 를 이 이름으로 찾으므로
+# (ensemble.py 의 getattr(self.weights, strat.name)) StrategyWeights 필드명과
+# 반드시 같아야 한다.
+STRATEGY_NAMES: Tuple[str, ...] = ("day_breakout", "day_pullback", "day_momentum",
+                                   "swing_trend", "mean_reversion")
+
+
+def default_ensemble(config: Config, threshold: float, min_votes: int = 1,
+                     only: Optional[Sequence[str]] = None) -> Ensemble:
+    """백테스터와 같은 전략 구성. 둘이 갈라지면 측정이 무의미해진다.
+
+    `only` 를 주면 그 전략만 남긴다 — 앙상블 전체가 지고 있을 때 **어느 전략이
+    주범인지** 가르기 위한 격리 측정용이다. 합쳐 놓으면 이기는 전략의 우위를
+    지는 전략이 덮어 쓰므로, 하나씩 떼어 보지 않고는 구분되지 않는다.
+
+    점수 해석이 달라지는 점에 주의한다. 앙상블 점수는 남은 전략들의 가중평균
+    (ensemble.py: weighted / total_w)이라, 하나만 남기면 **점수 = 그 전략의
+    strength** 가 된다. 따라서 격리 측정의 --threshold 는 전체 앙상블에서의
+    같은 값과 같은 의미가 아니다. 전략끼리 비교할 때만 쓰고, 전체 앙상블
+    결과와 직접 견주지 않는다.
+    """
+    built = [DayBreakout(), DayPullback(), DayMomentum(), SwingTrend(),
+             MeanReversion()]
+    if only:
+        unknown = [n for n in only if n not in STRATEGY_NAMES]
+        if unknown:
+            raise ValueError(
+                f"모르는 전략: {', '.join(unknown)} "
+                f"(가능: {', '.join(STRATEGY_NAMES)})")
+        built = [s for s in built if s.name in set(only)]
+    return Ensemble(built, config.weights, threshold=threshold, min_votes=min_votes)
 
 
 class EdgeAnalyzer:
@@ -256,7 +286,12 @@ class EdgeAnalyzer:
 
         rep = EdgeReport(n_bars=n_bars, n_signals=len(scored),
                          threshold=self.threshold,
-                         adverse_horizon=self._adverse_horizon())
+                         adverse_horizon=self._adverse_horizon(),
+                         # getattr 인 이유: EdgeAnalyzer 는 `evaluate()` 하나만
+                         # 요구하는 느슨한 자리다(테스트가 가짜 앙상블을 끼운다).
+                         # 리포트에 이름을 남기자고 그 인터페이스를 좁히지 않는다.
+                         strategies=[s.name for s in
+                                     getattr(self.ensemble, "strategies", [])])
         for h in self.horizons:
             s, b = sig[h], base[h]
             if not s or not b:
