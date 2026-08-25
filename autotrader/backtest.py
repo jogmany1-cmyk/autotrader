@@ -52,7 +52,8 @@ class Backtester:
                  trail_pct: float = 0.05,
                  history_bars: Optional[int] = None,
                  trade_window: Optional[Tuple[datetime, datetime]] = None,
-                 flat_at_window_end: bool = True):
+                 flat_at_window_end: bool = True,
+                 score_mode: str = "all-weights"):
         self.provider = provider
         self.config = config
         # 거래 창 (닫힌 구간). 창 밖의 봉은 **지표 계산용 이력으로만** 쓰이고
@@ -73,7 +74,8 @@ class Backtester:
         self.strategies = list(strategies) if strategies else self._default_strategies()
         self.ensemble = Ensemble(self.strategies, config.weights,
                                  threshold=ensemble_threshold,
-                                 min_votes=ensemble_min_votes)
+                                 min_votes=ensemble_min_votes,
+                                 score_mode=score_mode)
         self.trail_pct = trail_pct
 
     def _default_strategies(self) -> List[Strategy]:

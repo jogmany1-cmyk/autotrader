@@ -220,10 +220,17 @@ def test_report_records_fit_mode_none():
     assert wf.FIT_MODE == "none"
 
 
-def test_active_voters_mode_is_refused_until_implemented():
-    """없는 모드를 조용히 all-weights 로 돌리면 두 결과가 같게 나와 비교가 거짓이 된다."""
-    with pytest.raises(NotImplementedError):
-        wf.run_walkforward(_P(), _cfg(), score_mode="active-voters")
+def test_active_voters_mode_runs_and_is_recorded():
+    """실험 모드가 실제 실행 경로에 전달되고 리포트에 남아야 한다."""
+    need = (wf.TRAIN_MIN_BARS + 2 * wf.PURGE_BARS
+            + wf.VALIDATION_BARS + wf.OOS_BARS)
+    rep = wf.run_walkforward(_P(n_sym=1, n=need), _cfg(),
+                             history_bars=need,
+                             score_mode="active-voters")
+    assert rep["score_mode"] == "active-voters"
+
+
+def test_unknown_score_mode_is_refused():
     with pytest.raises(ValueError):
         wf.run_walkforward(_P(), _cfg(), score_mode="oops")
 

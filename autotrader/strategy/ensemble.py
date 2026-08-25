@@ -26,11 +26,15 @@ class EnsembleDecision:
 
 class Ensemble:
     def __init__(self, strategies: Sequence[Strategy], weights: StrategyWeights,
-                 threshold: float = 0.5, min_votes: int = 1):
+                 threshold: float = 0.5, min_votes: int = 1,
+                 score_mode: str = "all-weights"):
+        if score_mode not in ("all-weights", "active-voters"):
+            raise ValueError("score_mode must be 'all-weights' or 'active-voters'")
         self.strategies = list(strategies)
         self.weights = weights
         self.threshold = threshold
         self.min_votes = min_votes
+        self.score_mode = score_mode
 
     def evaluate(self, ctx: StrategyContext) -> EnsembleDecision:
         total_w = 0.0
@@ -47,8 +51,11 @@ class Ensemble:
             res = strat.evaluate(ctx)
             sig = res.signal.clamped()
             detail[strat.name] = sig.strength if sig.side is Side.BUY else 0.0
-            total_w += w
+            if self.score_mode == "all-weights":
+                total_w += w
             if sig.side is Side.BUY and sig.strength > 0:
+                if self.score_mode == "active-voters":
+                    total_w += w
                 weighted += w * sig.strength
                 votes += 1
                 if res.stop_hint is not None:

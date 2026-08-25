@@ -255,7 +255,7 @@ def judge(oos_pnls_by_fold: Sequence[Sequence[float]],
 
 def _segment(name: str, window: Tuple[int, int], timeline, provider, config,
              threshold: float, min_votes: int, trail: float,
-             history_bars: int, symbols) -> "SegmentResult":
+             history_bars: int, symbols, score_mode: str) -> "SegmentResult":
     """구간 하나를 독립 실행한다 — 같은 초기자본, 무포지션 시작.
 
     창 밖의 봉은 지표 계산용 이력으로만 남는다. 이전 구간의 포지션은
@@ -267,7 +267,8 @@ def _segment(name: str, window: Tuple[int, int], timeline, provider, config,
     start, end = timeline[lo - 1], timeline[hi - 1]
     bt = Backtester(provider, config, ensemble_threshold=threshold,
                     ensemble_min_votes=min_votes, trail_pct=trail,
-                    history_bars=history_bars, trade_window=(start, end))
+                    history_bars=history_bars, trade_window=(start, end),
+                    score_mode=score_mode)
     rep = bt.run(symbols=symbols)
     trades = [t for t in rep.trades if start <= t.exit_ts <= end]
     forced = [t for t in trades if t.exit_reason == "window_end"]
@@ -301,12 +302,6 @@ def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
 
     if score_mode not in SCORE_MODES:
         raise ValueError(f"score_mode 는 {SCORE_MODES} 중 하나여야 합니다")
-    if score_mode == "active-voters":
-        raise NotImplementedError(
-            "active-voters 점수 모드는 아직 없습니다 (규격 4단계). "
-            "기존 방식과 같은 fold·비용으로 비교해야 하므로, 모드를 먼저 추가한 뒤 "
-            "이 러너를 같은 인자로 다시 돌리세요.")
-
     syms = list(symbols) if symbols else provider.universe()
     bars_by_symbol = {}
     for s in syms:
@@ -337,12 +332,14 @@ def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
         results.append(FoldResult(
             fold=f,
             train=_segment("train", f.train, timeline, provider, config,
-                           threshold, min_votes, trail, history_bars, syms),
+                           threshold, min_votes, trail, history_bars, syms,
+                           score_mode),
             validation=_segment("validation", f.validation, timeline, provider,
                                 config, threshold, min_votes, trail,
-                                history_bars, syms),
+                                history_bars, syms, score_mode),
             oos=_segment("oos", f.oos, timeline, provider, config,
-                         threshold, min_votes, trail, history_bars, syms),
+                         threshold, min_votes, trail, history_bars, syms,
+                         score_mode),
         ))
 
     oos_pnls = [r.oos.trade_pnls for r in results]
