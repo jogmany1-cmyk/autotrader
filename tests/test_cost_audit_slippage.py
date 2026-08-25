@@ -99,9 +99,12 @@ def test_audit_is_report_only_and_does_not_touch_returns():
     assert a.cost_audit.total_cost == b.cost_audit.total_cost
 
 
-def test_higher_slippage_hurts_returns_through_fills_not_twice():
-    """슬리피지를 올리면 수익률이 나빠진다 — 체결가 경로로. 그 크기가
-    이중 차감 수준(2배)이 아닌지도 함께 본다."""
+def test_slippage_reaches_returns_through_fill_prices():
+    """슬리피지를 올리면 수익률이 나빠진다 — 체결가 경로가 살아있는지만 본다.
+
+    이중 차감 여부는 여기서 판별하지 않는다. 악화폭의 크기로 재려던 이전 판은
+    상한을 어떻게 잡아도 '정확히 두 번' 빼는 경우를 통과시켰다.
+    """
     lo, hi = _run(0.0), _run(50.0)      # 0bp vs 50bp
     assert hi.all.net_return < lo.all.net_return, "체결가에 반영이 안 되고 있다"
 
@@ -112,9 +115,58 @@ def test_higher_slippage_hurts_returns_through_fills_not_twice():
     assert audit.total_slippage_est == pytest.approx(
         audit.total_gross_volume * 50.0 / 10_000, abs=0.01)
 
-    # 수익률 악화폭이 슬리피지 추정치의 2배를 넘으면 어딘가에서 두 번 빼고 있다.
-    capital = Config().backtest.initial_cash
-    worsening = (lo.all.net_return - hi.all.net_return) * capital
-    assert worsening <= audit.total_slippage_est * 2.0, (
-        f"수익률 악화 {worsening:,.0f} 원이 슬리피지 추정치 "
-        f"{audit.total_slippage_est:,.0f} 원의 2배를 넘는다 — 이중 차감 의심")
+
+def test_audit_value_cannot_influence_performance(monkeypatch):
+    """감사값을 엉뚱하게 바꿔도 성과 숫자는 한 톨도 변하지 않아야 한다.
+
+    이것이 '이중 차감 금지'의 정확한 진술이다. 슬리피지는 체결가를 통해
+    수익률에 이미 반영돼 있고, `CostAudit` 은 **보고 전용**이다. 감사값이
+    성과에 조금이라도 흘러들면 같은 비용을 두 번 물리게 된다.
+
+    악화폭의 크기를 재는 방식으로는 이걸 잡을 수 없다. 그래서 인과를 직접
+    끊어 본다 — 감사 함수가 터무니없는 값을 돌려주게 만들고, 성과가 그대로인지
+    확인한다. 성과가 조금이라도 달라지면 어딘가에서 감사값을 읽고 있다는 뜻이다.
+    """
+    import autotrader.backtest as bt_mod
+    from autotrader.metrics import CostAudit
+
+    baseline = _run(5.0)
+    assert baseline.cost_audit is not None and baseline.cost_audit.n_fills > 0
+
+    real = bt_mod.build_cost_audit
+    calls = {"n": 0}
+
+    def absurd(fills, initial_capital, slippage_bp):
+        calls["n"] += 1
+        a = real(fills, initial_capital, slippage_bp)
+        # 부호까지 뒤집고 자릿수를 키운다. 보고 전용이라면 아무 영향이 없다.
+        return CostAudit(
+            total_gross_volume=-a.total_gross_volume * 1e6,
+            total_fees=-a.total_fees * 1e6,
+            total_taxes=-a.total_taxes * 1e6,
+            total_slippage_est=-a.total_slippage_est * 1e6,
+            cost_to_capital_ratio=-12345.0,
+            turnover_ratio=-12345.0,
+            avg_trade_size=-12345.0,
+            n_fills=a.n_fills,
+            slippage_bp=-12345.0,
+        )
+
+    monkeypatch.setattr(bt_mod, "build_cost_audit", absurd)
+    patched = _run(5.0)
+    assert calls["n"] == 1, "감사 함수가 호출되지 않아 검사가 무의미하다"
+
+    for name in ("net_return", "profit_factor", "cagr", "max_drawdown",
+                 "sharpe", "expectancy", "n_trades", "win_rate"):
+        for window in ("all", "train", "val", "oos"):
+            got = getattr(getattr(patched, window), name)
+            want = getattr(getattr(baseline, window), name)
+            assert got == want, (
+                f"{window}.{name} 이 감사값에 따라 달라졌다 "
+                f"({want} → {got}) — 감사가 성과 계산에 흘러들고 있다")
+    # 자본 곡선까지 동일해야 한다 (합계만 같고 경로가 다를 가능성 차단).
+    assert [p.equity for p in patched.equity_curve] == \
+           [p.equity for p in baseline.equity_curve]
+    # 감사 리포트 자체는 당연히 바뀌어 있어야 한다 — 패치가 먹었다는 증거.
+    assert patched.cost_audit is not None
+    assert patched.cost_audit.cost_to_capital_ratio == -12345.0
