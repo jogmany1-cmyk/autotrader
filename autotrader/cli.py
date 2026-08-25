@@ -291,7 +291,9 @@ def cmd_walkforward(args) -> int:
 
     ok = rep["verdict"]["passed"]
     print(f"\n  판정: {'PASS' if ok else 'FAIL'}")
-    print(f"  ⚠ {rep['caveat']}")
+    # Windows PowerShell 의 기본 cp949 출력에서는 U+26A0 경고 기호를 인코딩할
+    # 수 없어, 계산을 모두 마친 뒤 여기서 명령이 실패한다. ASCII 표식을 쓴다.
+    print(f"  [WARN] {rep['caveat']}")
     return 0 if ok else 1
 
 

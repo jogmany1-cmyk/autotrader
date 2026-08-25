@@ -469,3 +469,10 @@ def test_solo_uses_the_same_strategy_class_as_the_ensemble():
     assert isinstance(wf._build_strategy("mean_reversion"), MeanReversion)
     assert isinstance(wf._build_strategy("swing_trend"), SwingTrend)
     assert isinstance(wf._build_strategy("day_momentum"), DayMomentum)
+
+
+def test_walkforward_cli_has_no_cp949_incompatible_warning_symbol():
+    """한국어 Windows 콘솔에서 계산 완료 뒤 경고 출력 때문에 죽지 않아야 한다."""
+    import inspect
+    from autotrader.cli import cmd_walkforward
+    assert "⚠" not in inspect.getsource(cmd_walkforward)
