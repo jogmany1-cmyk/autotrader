@@ -255,7 +255,10 @@ class Backtester:
 
         screen = Screener(self.provider, self.config.universe).rank(symbols)
 
-        cost = build_cost_audit(broker.fills, self.config.backtest.initial_cash)
+        # 슬리피지는 리포트에만 더한다. 수익률에는 체결가(paper.py)를 통해 이미
+        # 반영돼 있으므로 성과 계산 쪽은 건드리지 않는다 — 이중 차감 금지.
+        cost = build_cost_audit(broker.fills, self.config.backtest.initial_cash,
+                                self.config.costs.slippage_bp)
         return BacktestReport(
             train=report_train, val=report_val, oos=report_oos, all=report_all,
             trades=list(broker.portfolio.closed_trades),

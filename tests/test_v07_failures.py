@@ -63,7 +63,9 @@ def test_chase_filter_disabled_with_zero():
 
 
 def test_cost_audit_empty_fills_returns_zero():
-    a = build_cost_audit([], initial_capital=10_000_000)
+    # slippage_bp 는 필수 인자다. 기본값을 두면 호출부가 빠뜨렸을 때 비용이
+    # 조용히 과소보고되기 때문 — tests/test_cost_audit_slippage.py 참조.
+    a = build_cost_audit([], initial_capital=10_000_000, slippage_bp=0.0)
     assert a.n_fills == 0 and a.turnover_ratio == 0.0
     assert a.cost_to_capital_ratio == 0.0
 
@@ -73,7 +75,9 @@ def test_cost_audit_computes_ratios():
         Fill(datetime(2026, 8, 24), "A", Side.BUY, 10, 1000, fee=100),
         Fill(datetime(2026, 8, 24), "A", Side.SELL, 10, 1050, fee=105, tax=189),
     ]
-    a = build_cost_audit(fills, initial_capital=100_000)
+    # 슬리피지 0bp — 이 테스트가 고정하는 것은 수수료·세금 부분이다.
+    # 슬리피지가 들어간 경우는 tests/test_cost_audit_slippage.py 가 따로 본다.
+    a = build_cost_audit(fills, initial_capital=100_000, slippage_bp=0.0)
     # gross = 10*1000 + 10*1050 = 20500 → turnover = 0.205
     assert abs(a.turnover_ratio - 0.205) < 1e-6
     # fees+tax = 100 + 105 + 189 = 394 → cost/capital = 0.00394

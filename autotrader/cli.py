@@ -68,10 +68,15 @@ def cmd_backtest(args) -> int:
         print("== 비용 감사 (실패 사례에서 배운 항목) =================")
         c = rep.cost_audit
         print(f"  {c.as_line()}")
-        print(f"  총 매매대금 {c.total_gross_volume:>16,.0f}")
-        print(f"  총 수수료   {c.total_fees:>16,.2f}")
-        print(f"  총 거래세   {c.total_taxes:>16,.2f}")
-        print(f"  평균 체결   {c.avg_trade_size:>16,.0f}")
+        print(f"  총 매매대금      {c.total_gross_volume:>16,.0f}")
+        print(f"  총 수수료        {c.total_fees:>16,.2f}")
+        print(f"  총 거래세        {c.total_taxes:>16,.2f}")
+        # 슬리피지는 체결가에 이미 녹아 있어 실측이 불가능하다. 설정값으로
+        # 되짚은 추정치임을 줄마다 밝힌다 — 실측으로 오해하면 안 된다.
+        print(f"  슬리피지(추정)   {c.total_slippage_est:>16,.2f}"
+              f"   ← 설정 {c.slippage_bp:g}bp × 매매대금")
+        print(f"  총 비용          {c.total_cost:>16,.2f}")
+        print(f"  평균 체결        {c.avg_trade_size:>16,.0f}")
     if rep.accuracy is not None and getattr(rep.accuracy, "n", 0):
         a = rep.accuracy
         print("== AI 예측 정확도 ================================")
@@ -88,6 +93,10 @@ def cmd_backtest(args) -> int:
                 "oos": rep.oos.to_dict(),
                 "n_trades": len(rep.trades),
                 "n_bars": len(rep.equity_curve),
+                # 비용 감사가 JSON 에 없으면 나중에 성적만 놓고 비교하게 되고,
+                # 회전율·비용이 다른 두 실행이 같은 조건으로 오해된다.
+                "cost_audit": (rep.cost_audit.to_dict()
+                               if rep.cost_audit is not None else None),
             }, fh, indent=2, ensure_ascii=False)
     return 0
 
