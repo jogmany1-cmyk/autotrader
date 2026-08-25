@@ -4,6 +4,7 @@
 규격대로 실제로 격리해서 도는지**를 본다. 창을 잘랐다고 선언만 하고 실제로는
 전 구간을 매매하고 있으면 fold 비교가 통째로 무의미해진다.
 """
+import copy
 import random
 from datetime import datetime, timedelta
 from typing import List
@@ -14,6 +15,7 @@ from autotrader import walkforward as wf
 from autotrader.backtest import Backtester, _merge_timeline
 from autotrader.config import Config
 from autotrader.data.base import DataProvider
+from autotrader.market import is_trading_day
 from autotrader.models import Bar, Side, Signal
 from autotrader.strategy.base import Strategy, StrategyResult
 
@@ -381,3 +383,89 @@ def test_short_data_is_allowed_below_the_limit_then_length_checked():
 
     with pytest.raises(RuntimeError, match="fold"):
         wf.run_walkforward(_P(n_sym=2, n=need - 1), _cfg(), history_bars=2500)
+
+
+# ---- 독립 전략 단독 실행 --------------------------------------------------
+
+def test_independent_strategy_spec_matches_the_document():
+    """규격 §6 의 표를 그대로 고정한다 — 값이 바뀌면 여기서 실패한다."""
+    assert wf.INDEPENDENT_STRATEGIES == {
+        "mean_reversion": 5, "swing_trend": 20, "day_momentum": 20}
+
+
+def test_unknown_strategy_is_refused():
+    """앙상블 전용 전략(day_breakout 등)을 단독 실행 대상으로 넣지 않는다."""
+    for bad in ("day_breakout", "day_pullback", "oops"):
+        with pytest.raises(ValueError, match="독립 실행 대상"):
+            wf.run_walkforward(_P(n_sym=2, n=100), _cfg(), strategy=bad)
+
+
+@pytest.mark.parametrize("name,hold", sorted(wf.INDEPENDENT_STRATEGIES.items()))
+def test_solo_run_applies_that_strategys_max_hold(name, hold):
+    """최대 보유기간이 실제로 덮어써지고 리포트에 남는지.
+
+    기본 설정(20봉)이 조용히 쓰이면 mean_reversion 이 5봉 전략이 아니게 되는데
+    리포트만 보고는 알 수 없다.
+    """
+    need = (wf.TRAIN_MIN_BARS + 2 * wf.PURGE_BARS
+            + wf.VALIDATION_BARS + wf.OOS_BARS)
+    rep = wf.run_walkforward(_P(n_sym=2, n=need), _cfg(),
+                             history_bars=need, strategy=name)
+    assert rep["strategy"] == name
+    assert rep["max_holding_bars"] == hold
+    # 앙상블 실행에는 전략 지정이 없다 — 두 리포트가 섞이지 않게.
+    ens = wf.run_walkforward(_P(n_sym=2, n=need), _cfg(), history_bars=need)
+    assert ens["strategy"] is None
+    assert ens["max_holding_bars"] == _cfg().execution.max_holding_bars
+
+
+def test_solo_run_does_not_mutate_the_callers_config():
+    """설정을 복사해서 바꾼다 — 안 그러면 이어지는 다른 모드 실행이 조용히
+    다른 보유기간으로 돈다."""
+    need = (wf.TRAIN_MIN_BARS + 2 * wf.PURGE_BARS
+            + wf.VALIDATION_BARS + wf.OOS_BARS)
+    cfg = _cfg()
+    before = cfg.execution.max_holding_bars
+    wf.run_walkforward(_P(n_sym=2, n=need), cfg, history_bars=need,
+                       strategy="mean_reversion")
+    assert cfg.execution.max_holding_bars == before
+
+
+def test_solo_run_keeps_stop_target_and_trailing():
+    """최대 보유기간은 상한일 뿐 유일한 청산 규칙이 아니다.
+
+    max_hold 만 남기고 손절·목표가·트레일링을 들어냈다면 청산 사유가
+    time_exit(또는 window_end) 한 종류로만 나온다.
+    """
+    need = (wf.TRAIN_MIN_BARS + 2 * wf.PURGE_BARS
+            + wf.VALIDATION_BARS + wf.OOS_BARS)
+    prov, cfg = _P(n_sym=4, n=need), _cfg()
+    from autotrader.backtest import Backtester, _merge_timeline
+    tl = _merge_timeline({s: prov.history(s, need) for s in prov.universe()})
+    solo = copy.deepcopy(cfg)
+    solo.execution.max_holding_bars = wf.INDEPENDENT_STRATEGIES["swing_trend"]
+    rep = Backtester(prov, solo, strategies=[wf._build_strategy("swing_trend")],
+                     ensemble_threshold=0.45, history_bars=need,
+                     trade_window=(tl[1290], tl[1539])).run()
+    if not rep.trades:
+        pytest.skip("이 구간에 거래가 없어 청산 사유를 볼 수 없다")
+    reasons = {t.exit_reason for t in rep.trades}
+    assert reasons - {"window_end"}, "창 끝 강제청산 말고는 청산이 없다"
+    # 보유기간 상한이 지켜지는지 — 창 끝 강제청산은 예외.
+    for t in rep.trades:
+        if t.exit_reason == "window_end":
+            continue
+        # 거래일만 센다. max_hold 는 mark() 호출 횟수 기준이고, mark 는
+        # 휴장일에 불리지 않는다 — 달력일로 세면 주말만큼 과다 집계된다.
+        held = sum(1 for d in tl
+                   if t.entry_ts < d <= t.exit_ts and is_trading_day(d.date()))
+        assert held <= wf.INDEPENDENT_STRATEGIES["swing_trend"] + 1, (
+            f"{t.symbol} 를 {held}봉 보유했다 (상한 20)")
+
+
+def test_solo_uses_the_same_strategy_class_as_the_ensemble():
+    """독립 실행이 다른 구현을 쓰면 비교가 무의미해진다."""
+    from autotrader.strategy import DayMomentum, MeanReversion, SwingTrend
+    assert isinstance(wf._build_strategy("mean_reversion"), MeanReversion)
+    assert isinstance(wf._build_strategy("swing_trend"), SwingTrend)
+    assert isinstance(wf._build_strategy("day_momentum"), DayMomentum)

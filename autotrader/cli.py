@@ -234,6 +234,7 @@ def cmd_fetch(args) -> int:
 
 # walkforward CLI 의 --score-mode 선택지. walkforward 모듈을 최상단에서
 # 임포트하지 않으려고 이름만 복사하지 않고, 파서 구성 시점에 읽어 온다.
+from .walkforward import INDEPENDENT_STRATEGIES as _WF_SOLO
 from .walkforward import SCORE_MODES as _WF_MODES
 
 
@@ -250,7 +251,7 @@ def cmd_walkforward(args) -> int:
         rep = wf.run_walkforward(
             provider, cfg, symbols=args.symbol, threshold=args.threshold,
             min_votes=args.votes, trail=args.trail, history_bars=args.bars,
-            score_mode=args.score_mode)
+            score_mode=args.score_mode, strategy=args.strategy)
     except (RuntimeError, ValueError, NotImplementedError) as exc:
         print(f"[ERROR] {exc}")
         return 2
@@ -259,6 +260,9 @@ def cmd_walkforward(args) -> int:
     print(f"== 구간별 안정성 평가 ({rep['evaluation']}) ==")
     print(f"  fit_mode={rep['fit_mode']}  score_mode={rep['score_mode']}  "
           f"임계={s['threshold']}  min_votes={s['min_votes']}")
+    if rep["strategy"]:
+        print(f"  [단독] 전략 {rep['strategy']} · 최대 보유 "
+              f"{rep['max_holding_bars']}봉 (손절·목표가·트레일링은 유지)")
     print(f"  종목 {s['n_symbols']:,}개 · 시간축 {s['n_bars_timeline']:,}봉 "
           f"· fold {len(rep['folds'])}개")
     tail = rep["excluded_tail_bars"]
@@ -651,6 +655,10 @@ def main(argv: Optional[list] = None) -> int:
     p_wf.add_argument("--score-mode", default="all-weights",
                       choices=list(_WF_MODES),
                       help="앙상블 점수 방식. all-weights 가 현재 방식(기본값)")
+    p_wf.add_argument("--strategy", choices=list(_WF_SOLO),
+                      help="전략 하나만 단독 실행 (규격 §6). 지정하면 그 전략의 "
+                           "최대 보유기간이 함께 적용된다: "
+                           + ", ".join(f"{k}={v}봉" for k, v in _WF_SOLO.items()))
     p_wf.add_argument("--symbol", action="append", help="종목 지정 (반복)")
     p_wf.add_argument("--output", help="결과 JSON 저장 경로")
     p_wf.set_defaults(func=cmd_walkforward)

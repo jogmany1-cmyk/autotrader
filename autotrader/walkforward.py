@@ -29,8 +29,9 @@ Overfitting", https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2308659).
 """
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 # ---- 배치 규격 (실행 전 고정. 결과를 보고 바꾸지 않는다) --------------------
 TRAIN_MIN_BARS = 1000      # fold 1 의 TRAIN 길이. expanding 이므로 시작점은 항상 1
@@ -156,6 +157,14 @@ def profit_concentration(pnls_by_fold: Sequence[Sequence[float]]) -> float:
     return max(per_fold) / total
 
 
+def _build_strategy(name: str):
+    """이름으로 전략 인스턴스 하나를 만든다. 앙상블과 같은 클래스를 쓴다 —
+    독립 실행이 다른 구현을 쓰면 비교가 무의미해진다."""
+    from .strategy import DayMomentum, MeanReversion, SwingTrend
+    return {"mean_reversion": MeanReversion, "swing_trend": SwingTrend,
+            "day_momentum": DayMomentum}[name]()
+
+
 # ---- 러너 ------------------------------------------------------------------
 #
 # fit_mode = "none". TRAIN 에서 아무것도 적합하지 않는다.
@@ -168,6 +177,19 @@ def profit_concentration(pnls_by_fold: Sequence[Sequence[float]]) -> float:
 FIT_MODE = "none"
 
 SCORE_MODES = ("all-weights", "active-voters")
+
+# 독립 전략 단독 실행 규격: 이름 → **최대 보유 봉수**.
+#
+# 이 숫자는 "우위가 관측된 지평선" 이 아니라 실제 강제청산 상한이다. 기존
+# 손절·목표가·트레일링 청산은 그대로 두고 그 위에 상한으로만 얹는다. 손절
+# 없이 정확히 N봉 종가에만 청산하면 edge 측정과는 가까워지지만 위험관리를
+# 들어낸 다른 전략이 되므로, 이 비교에는 넣지 않는다
+# (docs/WALKFORWARD-SPEC.md §6).
+INDEPENDENT_STRATEGIES: Dict[str, int] = {
+    "mean_reversion": 5,
+    "swing_trend": 20,
+    "day_momentum": 20,
+}
 
 
 @dataclass
@@ -255,7 +277,8 @@ def judge(oos_pnls_by_fold: Sequence[Sequence[float]],
 
 def _segment(name: str, window: Tuple[int, int], timeline, provider, config,
              threshold: float, min_votes: int, trail: float,
-             history_bars: int, symbols, score_mode: str) -> "SegmentResult":
+             history_bars: int, symbols, score_mode: str,
+             strategies=None) -> "SegmentResult":
     """구간 하나를 독립 실행한다 — 같은 초기자본, 무포지션 시작.
 
     창 밖의 봉은 지표 계산용 이력으로만 남는다. 이전 구간의 포지션은
@@ -268,7 +291,7 @@ def _segment(name: str, window: Tuple[int, int], timeline, provider, config,
     bt = Backtester(provider, config, ensemble_threshold=threshold,
                     ensemble_min_votes=min_votes, trail_pct=trail,
                     history_bars=history_bars, trade_window=(start, end),
-                    score_mode=score_mode)
+                    score_mode=score_mode, strategies=strategies)
     rep = bt.run(symbols=symbols)
     trades = [t for t in rep.trades if start <= t.exit_ts <= end]
     forced = [t for t in trades if t.exit_reason == "window_end"]
@@ -291,7 +314,8 @@ def _segment(name: str, window: Tuple[int, int], timeline, provider, config,
 def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
                     min_votes: int = 1, trail: float = 0.05,
                     history_bars: int = 2500,
-                    score_mode: str = "all-weights") -> Dict[str, object]:
+                    score_mode: str = "all-weights",
+                    strategy: Optional[str] = None) -> Dict[str, object]:
     """규격대로 rolling-origin 평가를 돌리고 리포트 dict 를 돌려준다.
 
     **봉 번호는 병합 시간축 기준이다.** 종목마다 상장일과 봉 수가 다르므로
@@ -302,6 +326,21 @@ def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
 
     if score_mode not in SCORE_MODES:
         raise ValueError(f"score_mode 는 {SCORE_MODES} 중 하나여야 합니다")
+    # 독립 전략 단독 실행. max_holding_bars 를 그 전략 값으로 덮어쓴다.
+    # config 를 복사해서 바꾼다 — 호출부의 설정을 건드리면 이어지는 다른 모드
+    # 실행이 조용히 다른 보유기간으로 돌게 된다.
+    strategies = None
+    max_hold = config.execution.max_holding_bars
+    if strategy is not None:
+        if strategy not in INDEPENDENT_STRATEGIES:
+            raise ValueError(
+                f"독립 실행 대상이 아닙니다: {strategy} "
+                f"(가능: {', '.join(INDEPENDENT_STRATEGIES)})")
+        config = copy.deepcopy(config)
+        max_hold = INDEPENDENT_STRATEGIES[strategy]
+        config.execution.max_holding_bars = max_hold
+        strategies = [_build_strategy(strategy)]
+
     syms = list(symbols) if symbols else provider.universe()
     bars_by_symbol = {}
     for s in syms:
@@ -333,13 +372,13 @@ def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
             fold=f,
             train=_segment("train", f.train, timeline, provider, config,
                            threshold, min_votes, trail, history_bars, syms,
-                           score_mode),
+                           score_mode, strategies),
             validation=_segment("validation", f.validation, timeline, provider,
                                 config, threshold, min_votes, trail,
-                                history_bars, syms, score_mode),
+                                history_bars, syms, score_mode, strategies),
             oos=_segment("oos", f.oos, timeline, provider, config,
                          threshold, min_votes, trail, history_bars, syms,
-                         score_mode),
+                         score_mode, strategies),
         ))
 
     oos_pnls = [r.oos.trade_pnls for r in results]
@@ -351,6 +390,10 @@ def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
         "fit_mode": FIT_MODE,
         "evaluation": "expanding rolling-origin (walk-forward optimization 아님)",
         "score_mode": score_mode,
+        # 어떤 전략 구성으로 돌았는지. 기본 설정(20봉)이 조용히 쓰이면
+        # mean_reversion 이 5봉 전략이 아니게 되는데 리포트만으로는 알 수 없다.
+        "strategy": strategy,
+        "max_holding_bars": max_hold,
         "settings": {"threshold": threshold, "min_votes": min_votes,
                      "trail": trail, "history_bars": history_bars,
                      "n_symbols": len(syms), "n_bars_timeline": n_bars,
