@@ -214,3 +214,28 @@ def test_token_response_without_a_token_field_is_also_caught():
     })()
     with pytest.raises(DataError):
         pr._ensure_token()
+
+
+def test_long_fetch_reports_progress():
+    """4천 종목 1~2시간 동안 아무것도 안 찍히면 사용자는 멈춘 것으로 오인하고
+    창을 닫는다 — 실제로 있었던 일. 조용한 성공의 사용자 인터페이스판이다."""
+    pytest.importorskip("requests")
+    from autotrader.config import KiwoomConfig
+    from autotrader.data.kiwoom import KiwoomProvider
+
+    pr = KiwoomProvider.__new__(KiwoomProvider)
+    pr.last_failures = []
+    ok, fail = pr._refresh([f"{i:06d}" for i in range(100)], lambda sym: None)
+    assert ok == 100
+
+
+def test_progress_line_appears_every_50_symbols(capsys):
+    pytest.importorskip("requests")
+    from autotrader.data.kiwoom import KiwoomProvider
+
+    pr = KiwoomProvider.__new__(KiwoomProvider)
+    pr.last_failures = []
+    pr._refresh([f"{i:06d}" for i in range(120)], lambda sym: None)
+    out = capsys.readouterr().out
+    assert "[50/120]" in out and "[100/120]" in out and "[120/120]" in out
+    assert "남은 예상" in out

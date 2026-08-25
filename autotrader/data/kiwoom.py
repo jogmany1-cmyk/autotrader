@@ -544,7 +544,9 @@ class KiwoomProvider(DataProvider):
         """
         self.last_failures = []
         ok = 0
-        for sym in symbols:
+        total = len(symbols)
+        started = time.time()
+        for i, sym in enumerate(symbols, 1):
             try:
                 fetch_one(sym)
                 ok += 1
@@ -552,6 +554,16 @@ class KiwoomProvider(DataProvider):
                 reason = f"{type(exc).__name__}: {exc}"
                 self.last_failures.append((sym, reason))
                 log.warning("수집 실패 %s — %s", sym, reason)
+            # 진행률. 이게 없으면 4천 종목 1~2시간 동안 실패 몇 줄 말고는
+            # 아무것도 안 찍혀서, 사용자는 멈춘 것으로 오인하고 창을 닫는다 —
+            # 실제로 그런 일이 있었다. 조용한 성공의 사용자 인터페이스판이다.
+            if i % 50 == 0 or i == total:
+                elapsed = time.time() - started
+                rate = i / elapsed if elapsed > 0 else 0.0
+                eta_min = (total - i) / rate / 60 if rate > 0 else 0.0
+                print(f"  [{i}/{total}] ok={ok} fail={len(self.last_failures)} "
+                      f"경과 {elapsed/60:.0f}분 · 남은 예상 {eta_min:.0f}분",
+                      flush=True)
         return ok, len(self.last_failures)
 
 
