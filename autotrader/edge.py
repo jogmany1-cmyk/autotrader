@@ -217,6 +217,12 @@ class EdgeAnalyzer:
                 series = self.provider.history(sym, limit=bars)
             except DataError:
                 continue
+            # 종목별 지표 시리즈 캐시. 같은 종목의 모든 봉이 하나를 공유한다.
+            # 넘기지 않으면 전략이 매 봉마다 [0..at] 전체를 다시 계산해 봉 수의
+            # 제곱으로 느려진다 — 실측 4,298종목 × 2,500봉에 약 15.8시간.
+            # Backtester 는 처음부터 이렇게 돌고 있었고(backtest.py 의
+            # indicator_cache), edge 만 연결이 빠져 있었다.
+            cache: Dict = {}
             # 워밍업(지표 계산) + 지평선만큼은 남겨둬야 미래 수익률을 잴 수 있다.
             last = len(series) - max_h - 1
             for i in range(self.warmup, last):
@@ -228,7 +234,7 @@ class EdgeAnalyzer:
                     base[h].append(series[i + 1 + h].close / entry - 1.0)
 
                 decision = self.ensemble.evaluate(
-                    StrategyContext(symbol=sym, bars=series, at=i))
+                    StrategyContext(symbol=sym, bars=series, at=i, cache=cache))
                 if decision.signal.side is not Side.BUY:
                     continue
                 if decision.score < self.threshold:
