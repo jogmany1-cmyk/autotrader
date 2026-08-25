@@ -154,3 +154,207 @@ def profit_concentration(pnls_by_fold: Sequence[Sequence[float]]) -> float:
     if total <= 0:
         return 1.0
     return max(per_fold) / total
+
+
+# ---- 러너 ------------------------------------------------------------------
+#
+# fit_mode = "none". TRAIN 에서 아무것도 적합하지 않는다.
+#
+# 엄밀히 이것은 walk-forward *optimization* 이 아니라 **expanding
+# rolling-origin evaluation** 이다. 고정된 설정을 시간 구간을 밀어 가며
+# 적용해 안정성만 본다. 나중에 누군가 TRAIN 자동 튜닝을 붙이면 그것은
+# 다른 실험이므로, 리포트의 fit_mode 로 두 결과가 섞이지 않게 한다.
+
+FIT_MODE = "none"
+
+SCORE_MODES = ("all-weights", "active-voters")
+
+
+@dataclass
+class SegmentResult:
+    """한 fold 의 한 구간(train/validation/oos) 실행 결과."""
+    name: str
+    window: Tuple[int, int]          # 1-기반 봉 번호
+    start: str                       # ISO 날짜
+    end: str
+    n_trades: int
+    trade_pnls: List[float]          # 수수료·세금·슬리피지 반영된 체결 기준
+    net_return: float
+    profit_factor: float
+    max_drawdown: float
+    cost: Dict[str, float]
+
+    def as_dict(self) -> Dict[str, object]:
+        return {"name": self.name, "window": list(self.window),
+                "start": self.start, "end": self.end,
+                "n_trades": self.n_trades,
+                "gross_profit": round(gross_profit(self.trade_pnls), 2),
+                "gross_loss": round(gross_loss(self.trade_pnls), 2),
+                "net_return": self.net_return,
+                "profit_factor": self.profit_factor,
+                "max_drawdown": self.max_drawdown, "cost": self.cost}
+
+
+@dataclass
+class FoldResult:
+    fold: Fold
+    train: SegmentResult
+    validation: SegmentResult
+    oos: SegmentResult
+
+    def as_dict(self) -> Dict[str, object]:
+        return {"fold": self.fold.as_dict(),
+                # TRAIN·VALIDATION 은 참고용이다. 채점은 OOS 만 한다.
+                "train_reference": self.train.as_dict(),
+                "validation_reference": self.validation.as_dict(),
+                "oos_scored": self.oos.as_dict()}
+
+
+@dataclass
+class Verdict:
+    passed: bool
+    checks: List[Tuple[str, bool, str]]
+
+    def as_dict(self) -> Dict[str, object]:
+        return {"passed": self.passed,
+                "checks": [{"name": n, "ok": ok, "detail": d}
+                           for n, ok, d in self.checks]}
+
+
+def judge(oos_pnls_by_fold: Sequence[Sequence[float]],
+          max_drawdown: float) -> Verdict:
+    """사전 등록된 기준으로만 판정한다. 기준은 docs/WALKFORWARD-SPEC.md §5."""
+    pf = combined_profit_factor(oos_pnls_by_fold)
+    net = sum(sum(p) for p in oos_pnls_by_fold)
+    total_trades = sum(len(p) for p in oos_pnls_by_fold)
+    per_fold_pf = [combined_profit_factor([p]) for p in oos_pnls_by_fold]
+    n_pf_above_one = sum(1 for v in per_fold_pf if v > 1.0)
+    conc = profit_concentration(oos_pnls_by_fold)
+    checks = [
+        ("합산 OOS PF ≥ 1.20", pf >= MIN_TOTAL_OOS_PROFIT_FACTOR, f"{pf:.3f}"),
+        ("합산 OOS 순수익 > 0", net > MIN_TOTAL_OOS_NET_PROFIT, f"{net:,.0f}"),
+        ("MDD ≥ -25%", max_drawdown >= MAX_DRAWDOWN, f"{max_drawdown:.4f}"),
+        ("합산 거래 ≥ 100", total_trades >= MIN_TOTAL_TRADES, f"{total_trades}"),
+        ("각 fold 거래 ≥ 20",
+         all(len(p) >= MIN_TRADES_PER_FOLD for p in oos_pnls_by_fold),
+         ", ".join(str(len(p)) for p in oos_pnls_by_fold)),
+        ("PF > 1.0 인 fold ≥ 3", n_pf_above_one >= MIN_FOLDS_WITH_PF_ABOVE_ONE,
+         f"{n_pf_above_one}/{len(oos_pnls_by_fold)}"),
+        ("집중도 ≤ 0.50", conc <= MAX_PROFIT_CONCENTRATION, f"{conc:.3f}"),
+    ]
+    return Verdict(passed=all(ok for _, ok, _ in checks), checks=checks)
+
+
+def _segment(name: str, window: Tuple[int, int], timeline, provider, config,
+             threshold: float, min_votes: int, trail: float,
+             history_bars: int, symbols) -> "SegmentResult":
+    """구간 하나를 독립 실행한다 — 같은 초기자본, 무포지션 시작.
+
+    창 밖의 봉은 지표 계산용 이력으로만 남는다. 이전 구간의 포지션은
+    이월되지 않는다 (Backtester 를 새로 만들므로 브로커·포트폴리오가 새 것).
+    """
+    from .backtest import Backtester
+
+    lo, hi = window
+    start, end = timeline[lo - 1], timeline[hi - 1]
+    bt = Backtester(provider, config, ensemble_threshold=threshold,
+                    ensemble_min_votes=min_votes, trail_pct=trail,
+                    history_bars=history_bars, trade_window=(start, end))
+    rep = bt.run(symbols=symbols)
+    trades = [t for t in rep.trades if start <= t.exit_ts <= end]
+    c = rep.cost_audit
+    return SegmentResult(
+        name=name, window=window,
+        start=start.date().isoformat(), end=end.date().isoformat(),
+        n_trades=len(trades), trade_pnls=[t.pnl for t in trades],
+        net_return=rep.all.net_return, profit_factor=rep.all.profit_factor,
+        max_drawdown=rep.all.max_drawdown,
+        cost=(c.to_dict() if c is not None else {}),
+    )
+
+
+def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
+                    min_votes: int = 1, trail: float = 0.05,
+                    history_bars: int = 2500,
+                    score_mode: str = "all-weights") -> Dict[str, object]:
+    """규격대로 rolling-origin 평가를 돌리고 리포트 dict 를 돌려준다.
+
+    **봉 번호는 병합 시간축 기준이다.** 종목마다 상장일과 봉 수가 다르므로
+    "1291번째 봉" 을 종목별 인덱스로 잡으면 종목마다 다른 날짜가 된다. 모든
+    종목의 날짜 합집합을 정렬한 축 위에서 fold 를 자른다.
+    """
+    from .backtest import _merge_timeline
+
+    if score_mode not in SCORE_MODES:
+        raise ValueError(f"score_mode 는 {SCORE_MODES} 중 하나여야 합니다")
+    if score_mode == "active-voters":
+        raise NotImplementedError(
+            "active-voters 점수 모드는 아직 없습니다 (규격 4단계). "
+            "기존 방식과 같은 fold·비용으로 비교해야 하므로, 모드를 먼저 추가한 뒤 "
+            "이 러너를 같은 인자로 다시 돌리세요.")
+
+    syms = list(symbols) if symbols else provider.universe()
+    bars_by_symbol = {}
+    for s in syms:
+        try:
+            bars_by_symbol[s] = provider.history(s, limit=history_bars)
+        except Exception:
+            continue
+    if not bars_by_symbol:
+        raise RuntimeError("사용할 심볼 데이터가 없습니다")
+    timeline = _merge_timeline(bars_by_symbol)
+    n_bars = len(timeline)
+    folds = build_folds(n_bars)
+    if not folds:
+        need = TRAIN_MIN_BARS + 2 * PURGE_BARS + VALIDATION_BARS + OOS_BARS
+        raise RuntimeError(
+            f"봉 {n_bars}개로는 fold 를 만들 수 없습니다 (규격상 최소 {need}봉)")
+
+    syms = list(bars_by_symbol)
+    results: List[FoldResult] = []
+    for f in folds:
+        results.append(FoldResult(
+            fold=f,
+            train=_segment("train", f.train, timeline, provider, config,
+                           threshold, min_votes, trail, history_bars, syms),
+            validation=_segment("validation", f.validation, timeline, provider,
+                                config, threshold, min_votes, trail,
+                                history_bars, syms),
+            oos=_segment("oos", f.oos, timeline, provider, config,
+                         threshold, min_votes, trail, history_bars, syms),
+        ))
+
+    oos_pnls = [r.oos.trade_pnls for r in results]
+    worst_dd = min((r.oos.max_drawdown for r in results), default=0.0)
+    verdict = judge(oos_pnls, worst_dd)
+    tail = unused_tail(n_bars)
+    return {
+        # 이 실험이 무엇이었는지. 나중에 TRAIN 튜닝이 붙어도 섞이지 않게.
+        "fit_mode": FIT_MODE,
+        "evaluation": "expanding rolling-origin (walk-forward optimization 아님)",
+        "score_mode": score_mode,
+        "settings": {"threshold": threshold, "min_votes": min_votes,
+                     "trail": trail, "history_bars": history_bars,
+                     "n_symbols": len(syms), "n_bars_timeline": n_bars,
+                     "costs": {"commission_bp": config.costs.commission_bp,
+                               "tax_sell_bp": config.costs.tax_sell_bp,
+                               "slippage_bp": config.costs.slippage_bp}},
+        "spec": {"train_min_bars": TRAIN_MIN_BARS,
+                 "validation_bars": VALIDATION_BARS, "oos_bars": OOS_BARS,
+                 "step_bars": STEP_BARS, "purge_bars": PURGE_BARS},
+        "folds": [r.as_dict() for r in results],
+        "combined_oos": {
+            "profit_factor": round(combined_profit_factor(oos_pnls), 4),
+            "net_profit": round(sum(sum(p) for p in oos_pnls), 2),
+            "gross_profit": round(sum(gross_profit(p) for p in oos_pnls), 2),
+            "gross_loss": round(sum(gross_loss(p) for p in oos_pnls), 2),
+            "n_trades": sum(len(p) for p in oos_pnls),
+            "worst_fold_max_drawdown": round(worst_dd, 4),
+            "profit_concentration": round(profit_concentration(oos_pnls), 4),
+        },
+        # 조용히 버리면 "전 구간을 썼다" 고 오해하게 된다.
+        "excluded_tail_bars": list(tail),
+        "verdict": verdict.as_dict(),
+        "caveat": ("탐색 검증이다. 통과해도 승격 근거가 아니며 미사용 데이터와 "
+                   "최소 60거래일 페이퍼 트레이딩이 별도로 필요하다."),
+    }

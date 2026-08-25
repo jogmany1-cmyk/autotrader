@@ -232,6 +232,65 @@ def cmd_fetch(args) -> int:
     return 0 if fail == 0 else 1
 
 
+# walkforward CLI 의 --score-mode 선택지. walkforward 모듈을 최상단에서
+# 임포트하지 않으려고 이름만 복사하지 않고, 파서 구성 시점에 읽어 온다.
+from .walkforward import SCORE_MODES as _WF_MODES
+
+
+def cmd_walkforward(args) -> int:
+    """시간 구간별 안정성 평가. **채점은 OOS 만** 한다 (규격 §2).
+
+    종료코드 0 = 사전 등록 기준 전부 충족, 1 = 하나라도 미달, 2 = 실행 불가.
+    """
+    from . import walkforward as wf
+
+    provider = _provider(args.csv)
+    cfg = _config(args.config, provider)
+    try:
+        rep = wf.run_walkforward(
+            provider, cfg, symbols=args.symbol, threshold=args.threshold,
+            min_votes=args.votes, trail=args.trail, history_bars=args.bars,
+            score_mode=args.score_mode)
+    except (RuntimeError, ValueError, NotImplementedError) as exc:
+        print(f"[ERROR] {exc}")
+        return 2
+
+    s, c = rep["settings"], rep["combined_oos"]
+    print(f"== 구간별 안정성 평가 ({rep['evaluation']}) ==")
+    print(f"  fit_mode={rep['fit_mode']}  score_mode={rep['score_mode']}  "
+          f"임계={s['threshold']}  min_votes={s['min_votes']}")
+    print(f"  종목 {s['n_symbols']:,}개 · 시간축 {s['n_bars_timeline']:,}봉 "
+          f"· fold {len(rep['folds'])}개")
+    tail = rep["excluded_tail_bars"]
+    if tail != [0, 0]:
+        print(f"  채점 제외 자투리: 봉 {tail[0]}~{tail[1]} "
+              f"({tail[1] - tail[0] + 1}봉, 규격 길이 미달)")
+    print()
+    print(f"  {'fold':>5}{'OOS 구간':>26}{'거래':>7}{'PF':>9}{'총이익':>14}")
+    print("  " + "-" * 60)
+    for f in rep["folds"]:
+        o = f["oos_scored"]
+        print(f"  {f['fold']['index']:>5}  {o['start']} ~ {o['end']}"
+              f"{o['n_trades']:>7}{o['profit_factor']:>9.3f}"
+              f"{o['gross_profit']:>14,.0f}")
+    print()
+    print(f"  합산 OOS: PF={c['profit_factor']:.3f}  순수익={c['net_profit']:,.0f}  "
+          f"거래={c['n_trades']}  집중도={c['profit_concentration']:.3f}")
+    print()
+    for chk in rep["verdict"]["checks"]:
+        print(f"  [{'PASS' if chk['ok'] else 'FAIL'}] {chk['name']:<22} {chk['detail']}")
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            json.dump(rep, fh, indent=2, ensure_ascii=False)
+        print(f"\n  → {args.output} 에 저장")
+
+    ok = rep["verdict"]["passed"]
+    print(f"\n  판정: {'PASS' if ok else 'FAIL'}")
+    print(f"  ⚠ {rep['caveat']}")
+    return 0 if ok else 1
+
+
 def cmd_run_job(args) -> int:
     """v0.8 스케줄러가 crontab 에서 호출할 표준 잡 실행."""
     from .jobs import JobContext, run
@@ -582,6 +641,19 @@ def main(argv: Optional[list] = None) -> int:
                       help="응답 본문 일부를 출력 (벤더 필드 불일치 진단용). "
                            "요청 헤더는 출력하지 않으므로 앱키는 노출되지 않음")
     p_ft.set_defaults(func=cmd_fetch)
+
+    p_wf = sub.add_parser(
+        "walkforward",
+        help="시간 구간별 안정성 평가 (expanding rolling-origin). "
+             "규격은 docs/WALKFORWARD-SPEC.md — 실행 후 설정 재조정 금지")
+    p_wf.add_argument("--bars", type=int, default=2500,
+                      help="종목당 사용할 봉 수 (기본 2500 = 규격값)")
+    p_wf.add_argument("--score-mode", default="all-weights",
+                      choices=list(_WF_MODES),
+                      help="앙상블 점수 방식. all-weights 가 현재 방식(기본값)")
+    p_wf.add_argument("--symbol", action="append", help="종목 지정 (반복)")
+    p_wf.add_argument("--output", help="결과 JSON 저장 경로")
+    p_wf.set_defaults(func=cmd_walkforward)
 
     p_rj = sub.add_parser("run-job", help="스케줄러가 크론에서 호출하는 표준 잡 실행")
     p_rj.add_argument("name", choices=["morning-entry", "eod-flat",

@@ -50,9 +50,23 @@ class Backtester:
                  ensemble_threshold: float = 0.55,
                  ensemble_min_votes: int = 1,
                  trail_pct: float = 0.05,
-                 history_bars: Optional[int] = None):
+                 history_bars: Optional[int] = None,
+                 trade_window: Optional[Tuple[datetime, datetime]] = None,
+                 flat_at_window_end: bool = True):
         self.provider = provider
         self.config = config
+        # 거래 창 (닫힌 구간). 창 밖의 봉은 **지표 계산용 이력으로만** 쓰이고
+        # 매매도 에쿼티 기록도 하지 않는다. rolling-origin 평가에서 각 구간을
+        # 같은 초기자본·무포지션으로 시작시키기 위한 장치다
+        # (docs/WALKFORWARD-SPEC.md 불변조건 1·2).
+        #
+        # 미래 봉 접근은 여전히 막혀 있다. 전략은 StrategyContext.at 까지만 보고,
+        # 창 끝을 넘어선 봉은 루프가 break 로 끊어 아예 닿지 않는다.
+        self.trade_window = trade_window
+        # 창 끝에 남은 포지션을 청산할지. 남겨 두면 그 구간에서 벌인 거래 중
+        # 결과가 나쁜 것들이 미청산 상태로 채점을 빠져나간다 — 손실을 창 밖에
+        # 숨기는 셈이 된다. 기본값으로 청산한다.
+        self.flat_at_window_end = flat_at_window_end
         # 종목당 불러올 봉 수. None 이면 기존 기본값(lookback_days × 4)을 쓴다.
         # 0 이면 있는 데이터 전부. 이 값이 곧 백테스트 구간의 길이가 된다.
         self.history_bars = history_bars
@@ -123,7 +137,16 @@ class Backtester:
         first_seen_close: Dict[str, float] = {}
         skipped_days = 0
 
+        last_prices: Dict[str, float] = {}
+        last_ts = None
         for day_ix, ts in enumerate(timeline):
+            # 거래 창 밖은 지표용 이력으로만 쓴다 — 매매·에쿼티 기록 없음.
+            # 창 시작 전을 skipped_days 로 세지 않도록 휴장일 판정보다 앞에 둔다.
+            if self.trade_window is not None:
+                if ts < self.trade_window[0]:
+                    continue
+                if ts > self.trade_window[1]:
+                    break
             # 휴장일이면 사이클 자체 스킵 (블로그 후기 개선판 ①)
             if not is_trading_day(ts.date()):
                 skipped_days += 1
@@ -236,6 +259,22 @@ class Backtester:
             equity_points.append(EquityPoint(ts=ts, equity=round(eq, 2),
                                              cash=round(broker.cash(), 2),
                                              exposure=round(exposure / eq, 4) if eq > 0 else 0.0))
+            last_prices, last_ts = prices, ts
+
+        # 2.5 창 끝 강제 청산. 미청산 포지션을 남기면 결과가 나쁜 거래가
+        #     채점을 빠져나가 손실이 창 밖에 숨는다.
+        if (self.trade_window is not None and self.flat_at_window_end
+                and last_ts is not None and broker.portfolio.positions):
+            for tr in broker.flat_all(last_prices, last_ts, reason="window_end"):
+                risk.register_exit(tr.pnl, last_ts.date())
+                tracker.record_exit(symbol=tr.symbol, exit_ts=tr.exit_ts,
+                                    exit_price=tr.exit_price,
+                                    exit_reason=tr.exit_reason)
+            if equity_points:
+                eq = broker.equity(last_prices)
+                equity_points[-1] = EquityPoint(
+                    ts=last_ts, equity=round(eq, 2), cash=round(broker.cash(), 2),
+                    exposure=0.0)
 
         # 3) 성과 분해
         splits = self.config.backtest.splits(len(equity_points))
