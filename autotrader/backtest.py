@@ -137,7 +137,9 @@ class Backtester:
         first_seen_close: Dict[str, float] = {}
         skipped_days = 0
 
-        last_prices: Dict[str, float] = {}
+        # 종목별 마지막 관측 종가. 창 끝 강제청산에서 쓴다 — 마지막 날에 봉이
+        # 없는 종목도 청산되도록.
+        latest_price: Dict[str, float] = {}
         last_ts = None
         for day_ix, ts in enumerate(timeline):
             # 거래 창 밖은 지표용 이력으로만 쓴다 — 매매·에쿼티 기록 없음.
@@ -259,22 +261,33 @@ class Backtester:
             equity_points.append(EquityPoint(ts=ts, equity=round(eq, 2),
                                              cash=round(broker.cash(), 2),
                                              exposure=round(exposure / eq, 4) if eq > 0 else 0.0))
-            last_prices, last_ts = prices, ts
+            # 종목별 **마지막으로 관측된** 종가를 누적한다. 창 마지막 날에 봉이
+            # 없는 종목(거래정지·상장폐지·희소 거래)도 청산 가격을 갖게 하려는
+            # 것이다. 그날의 prices 만 쓰면 그런 종목이 청산되지 않은 채
+            # 남는데, 리포트에는 청산된 것처럼 보여 손실이 사라진다.
+            latest_price.update(prices)
+            last_ts = ts
 
         # 2.5 창 끝 강제 청산. 미청산 포지션을 남기면 결과가 나쁜 거래가
         #     채점을 빠져나가 손실이 창 밖에 숨는다.
         if (self.trade_window is not None and self.flat_at_window_end
                 and last_ts is not None and broker.portfolio.positions):
-            for tr in broker.flat_all(last_prices, last_ts, reason="window_end"):
+            for tr in broker.flat_all(latest_price, last_ts, reason="window_end"):
                 risk.register_exit(tr.pnl, last_ts.date())
+                cooldown.register_exit(tr.symbol, tr.exit_reason, last_ts.date(),
+                                       pnl=tr.pnl)
                 tracker.record_exit(symbol=tr.symbol, exit_ts=tr.exit_ts,
                                     exit_price=tr.exit_price,
                                     exit_reason=tr.exit_reason)
             if equity_points:
-                eq = broker.equity(last_prices)
+                # 값을 강제하지 않고 브로커에서 다시 읽는다. 청산되지 못한
+                # 포지션이 남아 있으면 exposure 가 0 이 아니어야 하고, 그
+                # 사실이 리포트에 드러나야 한다.
+                eq = broker.equity(latest_price)
+                exposure = broker.portfolio.exposure(latest_price)
                 equity_points[-1] = EquityPoint(
                     ts=last_ts, equity=round(eq, 2), cash=round(broker.cash(), 2),
-                    exposure=0.0)
+                    exposure=round(exposure / eq, 4) if eq > 0 else 0.0)
 
         # 3) 성과 분해
         splits = self.config.backtest.splits(len(equity_points))

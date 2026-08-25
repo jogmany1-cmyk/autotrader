@@ -183,6 +183,11 @@ class SegmentResult:
     profit_factor: float
     max_drawdown: float
     cost: Dict[str, float]
+    # 창 끝 강제청산 건수와 그 PnL. 인위적 청산이 성적의 얼마를 차지하는지
+    # 보이지 않으면, 창 경계가 결과를 만들고 있어도 알 수 없다.
+    window_end_trades: int = 0
+    window_end_pnl: float = 0.0
+    unclosed_exposure: float = 0.0    # 청산 못 한 포지션이 남았는지
 
     def as_dict(self) -> Dict[str, object]:
         return {"name": self.name, "window": list(self.window),
@@ -192,7 +197,10 @@ class SegmentResult:
                 "gross_loss": round(gross_loss(self.trade_pnls), 2),
                 "net_return": self.net_return,
                 "profit_factor": self.profit_factor,
-                "max_drawdown": self.max_drawdown, "cost": self.cost}
+                "max_drawdown": self.max_drawdown, "cost": self.cost,
+                "window_end_trades": self.window_end_trades,
+                "window_end_pnl": round(self.window_end_pnl, 2),
+                "unclosed_exposure": self.unclosed_exposure}
 
 
 @dataclass
@@ -262,6 +270,7 @@ def _segment(name: str, window: Tuple[int, int], timeline, provider, config,
                     history_bars=history_bars, trade_window=(start, end))
     rep = bt.run(symbols=symbols)
     trades = [t for t in rep.trades if start <= t.exit_ts <= end]
+    forced = [t for t in trades if t.exit_reason == "window_end"]
     c = rep.cost_audit
     return SegmentResult(
         name=name, window=window,
@@ -270,6 +279,11 @@ def _segment(name: str, window: Tuple[int, int], timeline, provider, config,
         net_return=rep.all.net_return, profit_factor=rep.all.profit_factor,
         max_drawdown=rep.all.max_drawdown,
         cost=(c.to_dict() if c is not None else {}),
+        window_end_trades=len(forced),
+        window_end_pnl=sum(t.pnl for t in forced),
+        # 강제청산 뒤에도 노출이 남았다면 청산되지 못한 포지션이 있다는 뜻이다.
+        unclosed_exposure=(rep.equity_curve[-1].exposure
+                           if rep.equity_curve else 0.0),
     )
 
 
@@ -302,7 +316,14 @@ def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
             continue
     if not bars_by_symbol:
         raise RuntimeError("사용할 심볼 데이터가 없습니다")
-    timeline = _merge_timeline(bars_by_symbol)
+    # 종목별 history(limit=N) 의 **합집합**은 N 을 넘을 수 있다. 상장·폐지
+    # 시점이 달라 종목마다 다른 N 일을 들고 오기 때문이다. 그대로 두면 fold 가
+    # 4개보다 많이 생겨 사전 등록한 규격이 달라진다 — 실행 후 규격이 바뀌는
+    # 것과 같다. 그래서 채점 시간축을 **최근 history_bars 개 글로벌 거래일**로
+    # 자른다. 잘라낸 앞부분은 리포트에 남긴다.
+    full_timeline = _merge_timeline(bars_by_symbol)
+    timeline = full_timeline[-history_bars:] if history_bars else full_timeline
+    trimmed = len(full_timeline) - len(timeline)
     n_bars = len(timeline)
     folds = build_folds(n_bars)
     if not folds:
@@ -336,6 +357,13 @@ def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
         "settings": {"threshold": threshold, "min_votes": min_votes,
                      "trail": trail, "history_bars": history_bars,
                      "n_symbols": len(syms), "n_bars_timeline": n_bars,
+                     # 실제로 채점한 축이 어디부터 어디까지인지, 그리고 합집합
+                     # 에서 몇 일을 잘라냈는지. 이게 없으면 두 실행이 같은
+                     # 구간을 봤는지 나중에 확인할 수 없다.
+                     "timeline_start": timeline[0].date().isoformat(),
+                     "timeline_end": timeline[-1].date().isoformat(),
+                     "merged_union_bars": len(full_timeline),
+                     "trimmed_leading_bars": trimmed,
                      "costs": {"commission_bp": config.costs.commission_bp,
                                "tax_sell_bp": config.costs.tax_sell_bp,
                                "slippage_bp": config.costs.slippage_bp}},

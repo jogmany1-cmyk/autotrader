@@ -14,7 +14,8 @@ from autotrader import walkforward as wf
 from autotrader.backtest import Backtester, _merge_timeline
 from autotrader.config import Config
 from autotrader.data.base import DataProvider
-from autotrader.models import Bar
+from autotrader.models import Bar, Side, Signal
+from autotrader.strategy.base import Strategy, StrategyResult
 
 
 def _series(n: int, seed: int) -> List[Bar]:
@@ -119,16 +120,75 @@ def test_earlier_bars_are_still_available_to_indicators(prov, timeline):
     assert all(ts <= hi for _, _, ts in seen)
 
 
-def test_no_position_is_left_open_at_window_end(prov, timeline):
-    """창 끝에 포지션을 남기면 결과가 나쁜 거래가 채점을 빠져나간다."""
+class _AlwaysBuy(Strategy):
+    """항상 매수하는 stub. 창 끝에 포지션이 반드시 남게 만든다.
+
+    name 을 swing_trend 로 두어 StrategyWeights 의 기존 필드를 빌린다. 단독으로
+    쓰면 total_w 가 그 가중치 하나뿐이라 점수 = strength 가 된다.
+    """
+    name = "swing_trend"
+    warmup = 5
+
+    def evaluate(self, ctx):
+        px = ctx.bars[ctx.at].close
+        return StrategyResult(Signal(Side.BUY, 0.95, "stub"),
+                              stop_hint=px * 0.5, target_hint=px * 5.0)
+
+
+def test_window_end_actually_closes_open_positions(prov, timeline):
+    """창 끝 강제청산이 실제로 일어나는지 — 포지션이 보장되는 stub 으로 본다.
+
+    이전 판은 `assert ... or True` 라 무조건 통과했다. 그런 단언은 검사가
+    아니라 검사가 있다는 착시다.
+    """
     lo, hi = timeline[299], timeline[499]
-    rep = Backtester(prov, _cfg(), ensemble_threshold=0.45, history_bars=700,
+    rep = Backtester(prov, _cfg(), strategies=[_AlwaysBuy()],
+                     ensemble_threshold=0.45, history_bars=700,
                      trade_window=(lo, hi)).run()
+    forced = [t for t in rep.trades if t.exit_reason == "window_end"]
+    assert forced, "창 끝에 열린 포지션이 없어 강제청산을 검사할 수 없다"
+    assert all(t.exit_ts == hi for t in forced)
     assert rep.equity_curve[-1].exposure == 0.0
-    assert any(t.exit_reason == "window_end" for t in rep.trades) or True
-    # 마지막 에쿼티가 전액 현금이어야 한다 (미청산 포지션 없음).
     assert rep.equity_curve[-1].equity == pytest.approx(
         rep.equity_curve[-1].cash, rel=1e-9)
+
+
+def test_window_end_closes_symbols_absent_on_the_final_date():
+    """마지막 글로벌 날짜에 봉이 없는 종목도 마지막 관측 종가로 청산된다.
+
+    그날의 prices 만 쓰면 그런 종목은 청산되지 않은 채 남는데, exposure 를
+    0 으로 강제하면 리포트에는 청산된 것처럼 보인다 — 손실이 사라진다.
+    """
+    class _Sparse(DataProvider):
+        def __init__(self):
+            # SHORT 는 LONG 보다 60봉 일찍 끝난다.
+            self.b = {"LONG": _series(400, 11), "SHORT": _series(340, 12)}
+
+        def history(self, symbol, limit=500):
+            x = self.b[symbol]
+            return x[-limit:] if limit else x
+
+        def universe(self):
+            return list(self.b)
+
+    prov = _Sparse()
+    tl = _merge_timeline({s: prov.history(s, 400) for s in prov.universe()})
+    assert prov.b["SHORT"][-1].ts < tl[-1], "희소 상황이 만들어지지 않았다"
+
+    lo, hi = tl[100], tl[-1]
+    rep = Backtester(prov, _cfg(), strategies=[_AlwaysBuy()],
+                     ensemble_threshold=0.45, history_bars=400,
+                     trade_window=(lo, hi)).run()
+
+    closed_syms = {t.symbol for t in rep.trades}
+    assert "SHORT" in closed_syms, "마지막 날 봉이 없는 종목이 청산되지 않았다"
+    # 강제청산 뒤에는 노출이 0 이어야 하고, 그 값은 강제된 것이 아니라
+    # 브로커에서 다시 읽은 값이어야 한다.
+    assert rep.equity_curve[-1].exposure == 0.0
+    assert rep.equity_curve[-1].equity == pytest.approx(
+        rep.equity_curve[-1].cash, rel=1e-9)
+    # 청산에 비용이 붙었는지 (수수료·세금·슬리피지 유지)
+    assert rep.cost_audit is not None and rep.cost_audit.total_taxes > 0
 
 
 def test_windows_are_independent_of_each_other(prov, timeline):
@@ -238,3 +298,79 @@ def test_runner_scores_oos_only():
         sum(o["gross_profit"] for o in oos), abs=0.01)
     # fold 가 1개뿐이면 집중도는 정의상 1.0 이거나(이익 있음) 1.0(이익 0) 이다.
     assert rep["combined_oos"]["profit_concentration"] == pytest.approx(1.0)
+
+
+# ---- 시간축 고정 ------------------------------------------------------------
+
+class _Staggered(DataProvider):
+    """시작일·종료일이 서로 다른 종목들. 합집합이 history_bars 를 넘게 만든다."""
+
+    def __init__(self, n_each: int, offsets):
+        self.b = {}
+        for i, off in enumerate(offsets):
+            bars = _series(n_each, i + 21)
+            self.b[f"T{i}"] = [
+                Bar(ts=b.ts + timedelta(days=off), open=b.open, high=b.high,
+                    low=b.low, close=b.close, volume=b.volume) for b in bars]
+
+    def history(self, symbol, limit=500):
+        x = self.b[symbol]
+        return x[-limit:] if limit else x
+
+    def universe(self):
+        return list(self.b)
+
+
+def test_union_of_per_symbol_history_can_exceed_the_limit():
+    """전제 확인 — 종목별 limit 만큼 가져와도 합집합은 그보다 길어진다.
+
+    이 성질이 없으면 시간축 고정이 왜 필요한지 알 수 없다.
+    """
+    n = 1600
+    prov = _Staggered(n_each=n, offsets=(0, 200, 400))
+    union = _merge_timeline({s: prov.history(s, n) for s in prov.universe()})
+    assert len(union) > n, "합집합이 limit 를 넘지 않아 이 검사가 무의미하다"
+
+
+def test_scoring_timeline_is_trimmed_to_the_last_history_bars():
+    """합집합이 길어져도 채점 축은 정확히 최근 history_bars 개여야 한다.
+
+    자르지 않으면 fold 가 규격보다 많이 생겨, 사전 등록한 배치가 실행 시점에
+    달라진다 — 실행 후 규격을 바꾸는 것과 같다.
+    """
+    need = (wf.TRAIN_MIN_BARS + 2 * wf.PURGE_BARS
+            + wf.VALIDATION_BARS + wf.OOS_BARS)          # 1540
+    prov = _Staggered(n_each=need, offsets=(0, 150, 300))
+    union = _merge_timeline({s: prov.history(s, need) for s in prov.universe()})
+
+    rep = wf.run_walkforward(prov, _cfg(), history_bars=need, threshold=0.45)
+    s = rep["settings"]
+    assert s["n_bars_timeline"] == need
+    assert s["merged_union_bars"] == len(union)
+    assert s["trimmed_leading_bars"] == len(union) - need > 0
+    assert s["timeline_end"] == union[-1].date().isoformat()
+    assert s["timeline_start"] == union[-need].date().isoformat()
+    # 자르지 않았다면 fold 가 1개보다 많았을 것이다.
+    assert len(rep["folds"]) == 1
+    assert len(wf.build_folds(len(union))) > 1, "자르기 전에는 fold 가 더 많다"
+
+
+def test_2500_bar_timeline_always_yields_four_folds():
+    """규격의 핵심 약속 — 2,500봉이면 언제나 fold 4개."""
+    assert len(wf.build_folds(2500)) == 4
+    # 합집합이 얼마나 길든, 잘린 뒤 2,500 이면 4개다.
+    for union_len in (2500, 2600, 3000, 4000):
+        assert len(wf.build_folds(min(union_len, 2500))) == 4
+
+
+def test_short_data_is_allowed_below_the_limit_then_length_checked():
+    """데이터가 부족하면 2,500 미만도 허용하되 최소 길이 검사에 걸린다."""
+    need = (wf.TRAIN_MIN_BARS + 2 * wf.PURGE_BARS
+            + wf.VALIDATION_BARS + wf.OOS_BARS)
+    ok = wf.run_walkforward(_P(n_sym=2, n=need), _cfg(), history_bars=2500,
+                            threshold=0.45)
+    assert ok["settings"]["n_bars_timeline"] == need < 2500
+    assert ok["settings"]["trimmed_leading_bars"] == 0
+
+    with pytest.raises(RuntimeError, match="fold"):
+        wf.run_walkforward(_P(n_sym=2, n=need - 1), _cfg(), history_bars=2500)
