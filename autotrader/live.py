@@ -391,7 +391,8 @@ class LiveTrader:
                         order, price_hint=price, ts=now,
                         stop=dec.stop_hint, target=dec.target_hint,
                         trail=self._trail_for(bars, len(bars) - 1, price),
-                        entry_score=dec.score, entry_votes=dec.votes)
+                        entry_score=dec.score, entry_votes=dec.votes,
+                        entry_factors=dec.factors)
                 else:
                     bo = self.broker.submit(order, price_hint=price)
                 self.book.add(bo)
@@ -414,6 +415,7 @@ class LiveTrader:
                     opened_at=now, stop_price=dec.stop_hint,
                     take_price=dec.target_hint,
                     entry_score=dec.score, entry_votes=dec.votes,
+                    entry_factors=dict(dec.factors),
                 )
                 prices.setdefault(cand.symbol, price)
                 self.risk.register_entry()
@@ -421,7 +423,8 @@ class LiveTrader:
                     symbol=cand.symbol, entry_ts=now, entry_price=price,
                     confidence=dec.score, votes=dec.votes,
                     target_price=dec.target_hint, stop_price=dec.stop_hint,
-                    reason=dec.signal.reason[:32], factor_detail=dict(dec.detail),
+                    reason=dec.signal.reason[:32],
+                    factor_detail={**dec.detail, **dec.factors},
                 ))
             except Exception as exc:
                 report.orders_rejected += 1
@@ -503,7 +506,8 @@ class LiveTrader:
                         self.broker.submit(order, price_hint=price, ts=now,
                                            stop=dec.stop_hint, target=dec.target_hint,
                                            entry_score=dec.score,
-                                           entry_votes=dec.votes)
+                                           entry_votes=dec.votes,
+                                           entry_factors=dec.factors)
                     else:
                         self.broker.submit(order, price_hint=price)
                     report.orders_placed += 1
@@ -512,7 +516,8 @@ class LiveTrader:
                         symbol=ev.symbol, entry_ts=now, entry_price=price,
                         confidence=dec.score, votes=dec.votes,
                         target_price=dec.target_hint, stop_price=dec.stop_hint,
-                        reason="stream", factor_detail=dict(dec.detail),
+                        reason="stream",
+                        factor_detail={**dec.detail, **dec.factors},
                     ))
                 except Exception as exc:
                     report.orders_rejected += 1

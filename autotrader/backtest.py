@@ -136,8 +136,9 @@ class Backtester:
         # 종목별 지표 시리즈 캐시. 같은 종목의 모든 봉이 공유한다.
         # 없으면 매 봉마다 전체를 다시 계산해 봉 수의 제곱으로 느려진다.
         indicator_cache: Dict[str, Dict] = {}
-        # (symbol, stop, target, tag, score, votes, detail)
-        pending: List[Tuple[str, float, float, str, float, int, Dict[str, float]]] = []
+        # (symbol, stop, target, tag, score, votes, detail, factors)
+        pending: List[Tuple[str, float, float, str, float, int,
+                            Dict[str, float], Dict[str, float]]] = []
         # 매수 신호가 실제 체결까지 어디서 줄었는지. 성과에는 관여하지 않는
         # 감사 계수이며, 신호 문제와 계좌 제약 문제를 구분하기 위해 남긴다.
         entry_funnel = {
@@ -186,7 +187,7 @@ class Backtester:
             # 데이터도 입력 순서만 바꿔 성과가 달라진다. 전일 확정 점수가 높은
             # 후보부터, 동점이면 종목코드 순으로 처리한다.
             pending.sort(key=lambda row: (-row[4], row[0]))
-            for sym, stop, target, tag, score, votes, detail in pending:
+            for sym, stop, target, tag, score, votes, detail, factors in pending:
                 entry_funnel["pending_attempts"] += 1
                 bar = todays_bars.get(sym)
                 if bar is None:
@@ -207,6 +208,12 @@ class Backtester:
                     prev_close = sym_bars[sym_idx - 1].close
                     if prev_close > 0:
                         last_ret = price / prev_close - 1.0
+                entry_factors = dict(factors)
+                if last_ret is not None:
+                    entry_factors["execution.entry_gap_pct"] = last_ret
+                if stop and price > 0:
+                    entry_factors["execution.initial_stop_distance_pct"] = (
+                        price - stop) / price
                 decision = risk.evaluate_entry(
                     symbol=sym, price=price, stop_price=stop,
                     equity=equity, cash=broker.cash(),
@@ -226,6 +233,7 @@ class Backtester:
                         price_hint=price, ts=ts, stop=stop, target=target,
                         trail=self._trail_for(sym_bars, sym_idx - 1, price),
                         entry_score=score, entry_votes=votes,
+                        entry_factors=entry_factors,
                     )
                     risk.register_entry()
                     entry_funnel["entries_filled"] += 1
@@ -233,7 +241,8 @@ class Backtester:
                         symbol=sym, entry_ts=ts, entry_price=price,
                         confidence=score, votes=votes,
                         target_price=target, stop_price=stop,
-                        reason=tag, factor_detail=dict(detail),
+                        reason=tag,
+                        factor_detail={**detail, **entry_factors},
                     ))
                 except Exception:
                     entry_funnel["broker_errors"] += 1
@@ -284,6 +293,7 @@ class Backtester:
                 pending.append((
                     sym, dec.stop_hint, dec.target_hint,
                     dec.signal.reason[:40], dec.score, dec.votes, dec.detail,
+                    dec.factors,
                 ))
 
             # 2.4 에쿼티 스냅샷

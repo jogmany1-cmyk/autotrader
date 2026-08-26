@@ -260,6 +260,8 @@ def cmd_walkforward(args) -> int:
     print(f"== 구간별 안정성 평가 ({rep['evaluation']}) ==")
     print(f"  fit_mode={rep['fit_mode']}  score_mode={rep['score_mode']}  "
           f"임계={s['threshold']}  min_votes={s['min_votes']}")
+    print(f"  [탐색] 동일 OOS 참조 {s['exploratory_reference_round']}회차 · "
+          "최종 판정은 이후 새 데이터 60거래일 모의투자에서만 수행")
     if rep["strategy"]:
         print(f"  [단독] 전략 {rep['strategy']} · 최대 보유 "
               f"{rep['max_holding_bars']}봉 (손절·목표가·트레일링은 유지)")
@@ -304,6 +306,16 @@ def cmd_walkforward(args) -> int:
         pf = "-" if row["profit_factor"] is None else f"{row['profit_factor']:.2f}"
         print(f"    {bucket:<9} {row['n_trades']:>5}건  승률 {row['win_rate']:>6.1%}  "
               f"PF {pf:>6}  손익 {row['net_profit']:>12,.0f}")
+    if d["by_entry_factor"]:
+        print("  진입 조건별 (hard_stop 집중 확인):")
+        for factor in d["by_entry_factor"].values():
+            print(f"    [{factor['label']}]")
+            for bucket, row in factor["buckets"].items():
+                pf = ("-" if row["profit_factor"] is None
+                      else f"{row['profit_factor']:.2f}")
+                print(f"      {bucket:<12} {row['n_trades']:>5}건  "
+                      f"hard_stop {row['hard_stop_rate']:>6.1%}  "
+                      f"PF {pf:>6}  손익 {row['net_profit']:>12,.0f}")
     print("  청산 사유별 (손익이 나쁜 순):")
     reasons = sorted(d["by_exit_reason"].items(),
                      key=lambda item: item[1]["net_profit"])

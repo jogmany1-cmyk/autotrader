@@ -129,6 +129,7 @@ class Position:
     meta: Dict[str, float] = field(default_factory=dict)
     entry_score: float = 0.0
     entry_votes: int = 0
+    entry_factors: Dict[str, float] = field(default_factory=dict)
 
     def market_value(self, price: float) -> float:
         return self.qty * price
@@ -165,6 +166,7 @@ class Trade:
     bars_held: int
     entry_score: float = 0.0
     entry_votes: int = 0
+    entry_factors: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass

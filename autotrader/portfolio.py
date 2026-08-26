@@ -30,11 +30,13 @@ class Portfolio:
                    target: Optional[float] = None,
                    trail: Optional[float] = None,
                    entry_score: float = 0.0,
-                   entry_votes: int = 0) -> Optional[Trade]:
+                   entry_votes: int = 0,
+                   entry_factors: Optional[Dict[str, float]] = None) -> Optional[Trade]:
         """체결 하나를 반영하고, 이번 체결이 라운드 트립을 완료했다면 Trade 를 리턴."""
         self.cash -= fill.cost
         if fill.side is Side.BUY:
-            self._apply_buy(fill, stop, target, trail, entry_score, entry_votes)
+            self._apply_buy(fill, stop, target, trail, entry_score, entry_votes,
+                            entry_factors)
             return None
         return self._apply_sell(fill)
 
@@ -42,7 +44,8 @@ class Portfolio:
                    target: Optional[float],
                    trail: Optional[float] = None,
                    entry_score: float = 0.0,
-                   entry_votes: int = 0) -> None:
+                   entry_votes: int = 0,
+                   entry_factors: Optional[Dict[str, float]] = None) -> None:
         pos = self.positions.get(fill.symbol)
         if pos is None:
             self.positions[fill.symbol] = Position(
@@ -51,6 +54,7 @@ class Portfolio:
                 opened_at=fill.ts, stop_price=stop, take_price=target,
                 highest_close=fill.price, trail_pct=trail,
                 entry_score=entry_score, entry_votes=entry_votes,
+                entry_factors=dict(entry_factors or {}),
             )
             return
         # 추가 매수: 가중평균 단가 갱신, 스탑은 유지(더 높인 것만 반영)
@@ -76,6 +80,7 @@ class Portfolio:
             pnl=pnl, return_pct=pct, exit_reason=fill.tag or "manual",
             bars_held=pos.bars_held, entry_score=pos.entry_score,
             entry_votes=pos.entry_votes,
+            entry_factors=dict(pos.entry_factors),
         )
         self.closed_trades.append(trade)
         pos.qty -= fill.qty

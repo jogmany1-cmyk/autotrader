@@ -6,7 +6,7 @@ from autotrader.strategy import (DayBreakout, DayPullback, DayMomentum,
 from autotrader.strategy.base import StrategyContext
 from autotrader.strategy.base import Strategy, StrategyResult
 from autotrader.config import StrategyWeights
-from autotrader.models import Side, Signal
+from autotrader.models import Bar, Side, Signal
 
 
 class _Fixed(Strategy):
@@ -90,3 +90,24 @@ def test_active_voters_with_no_votes_has_zero_score():
 def test_unknown_score_mode_fails_loudly():
     with pytest.raises(ValueError, match="score_mode"):
         Ensemble([], StrategyWeights(), score_mode="oops")
+
+
+def test_swing_preserves_raw_factors_when_public_score_is_clipped():
+    bars = []
+    for i in range(260):
+        close = 100.0 * (1.004 ** i)
+        bars.append(Bar(datetime(2024, 1, 1) + timedelta(days=i),
+                        close, close * 1.01, close * 0.99, close, 1_000_000))
+    ctx = StrategyContext("TST", bars, len(bars) - 1)
+    result = SwingTrend().evaluate(ctx)
+
+    assert result.signal.side is Side.BUY
+    assert result.signal.strength == pytest.approx(0.95)
+    assert result.factors["raw_strength"] > 0.95
+    assert result.factors["roc_120"] > 0.45
+    assert result.factors["atr_pct"] > 0
+
+    decision = Ensemble([SwingTrend()], StrategyWeights(), threshold=0.45).evaluate(ctx)
+    assert decision.factors["swing_trend.raw_strength"] > 0.95
+    assert decision.factors["swing_trend.roc_120"] == pytest.approx(
+        result.factors["roc_120"])

@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Sequence
 
 from ..models import Bar, Signal
@@ -34,6 +34,9 @@ class StrategyResult:
     signal: Signal
     stop_hint: Optional[float] = None
     target_hint: Optional[float] = None
+    # 매매 판단에는 다시 사용하지 않는 진단용 원자료. clip 전 값과 지표의
+    # 실제 크기를 거래까지 보존해 점수 포화·손절 집중을 조사한다.
+    factors: Dict[str, float] = field(default_factory=dict)
 
     @staticmethod
     def hold(reason: str = "") -> "StrategyResult":

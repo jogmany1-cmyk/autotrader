@@ -146,7 +146,8 @@ class _RankedBuy(Strategy):
         px = ctx.bars[ctx.at].close
         strength = 0.50 + int(ctx.symbol[-1]) * 0.05
         return StrategyResult(Signal(Side.BUY, strength, "ranked"),
-                              stop_hint=px * 0.5, target_hint=px * 5.0)
+                              stop_hint=px * 0.5, target_hint=px * 5.0,
+                              factors={"raw_strength": strength + 0.2})
 
 
 def test_window_end_actually_closes_open_positions(prov, timeline):
@@ -219,6 +220,9 @@ def test_candidate_selection_prefers_higher_score(prov, timeline):
     assert rep.trades[0].symbol == "S0002"
     assert rep.trades[0].entry_score == pytest.approx(0.60)
     assert rep.trades[0].entry_votes == 1
+    assert rep.trades[0].entry_factors["swing_trend.raw_strength"] == pytest.approx(0.80)
+    assert "execution.entry_gap_pct" in rep.trades[0].entry_factors
+    assert "execution.initial_stop_distance_pct" in rep.trades[0].entry_factors
 
 
 def test_window_end_closes_symbols_absent_on_the_final_date():
@@ -348,6 +352,10 @@ def test_runner_produces_a_serialisable_report_end_to_end():
     assert rep["excluded_tail_bars"] == [0, 0]        # 딱 맞아떨어짐
     assert rep["settings"]["threshold"] == 0.45
     assert rep["settings"]["candidate_selection"] == "score-desc-symbol-asc"
+    assert rep["settings"]["exploratory_reference_round"] == 3
+    assert rep["settings"]["oos_result_exposures_after_factor_diagnostic"] == 4
+    assert rep["settings"]["final_decision_source"] == (
+        "future-data-paper-trading-min-60-trading-days")
     assert rep["settings"]["costs"]["slippage_bp"] == _cfg().costs.slippage_bp
 
     f = rep["folds"][0]

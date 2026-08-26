@@ -36,10 +36,18 @@ class SwingTrend(Strategy):
             return StrategyResult.hold("nan")
         if not (ma_f > ma_s and cur.close > ma_f and r120 >= self.min_roc_120):
             return StrategyResult.hold("no-trend")
-        strength = ind.clip(0.5 + r120 * 1.0, 0.5, 0.95)
+        raw_strength = 0.5 + r120 * 1.0
+        strength = ind.clip(raw_strength, 0.5, 0.95)
         stop = min(cur.close - 2.5 * atr_val, ma_s)
         target = cur.close + 5.0 * atr_val
         return StrategyResult(
             Signal(Side.BUY, strength, f"trend r120 {r120*100:.1f}%"),
             stop_hint=stop, target_hint=target,
+            factors={
+                "raw_strength": raw_strength,
+                "roc_120": r120,
+                "fast_slow_gap": ma_f / ma_s - 1.0,
+                "price_fast_gap": cur.close / ma_f - 1.0,
+                "atr_pct": atr_val / cur.close,
+            },
         )

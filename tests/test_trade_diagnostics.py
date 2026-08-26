@@ -6,13 +6,15 @@ from autotrader.models import Trade
 from autotrader.walkforward import combine_entry_funnels, trade_diagnostics
 
 
-def _trade(year, pnl, return_pct, reason, bars, score=0.0, votes=0):
+def _trade(year, pnl, return_pct, reason, bars, score=0.0, votes=0,
+           factors=None):
     return Trade(
         symbol="TST", entry_ts=datetime(year, 1, 2),
         exit_ts=datetime(year, 2, 2), qty=1,
         entry_price=100.0, exit_price=100.0 + pnl,
         pnl=pnl, return_pct=return_pct, exit_reason=reason,
         bars_held=bars, entry_score=score, entry_votes=votes,
+        entry_factors=dict(factors or {}),
     )
 
 
@@ -47,6 +49,8 @@ def test_trade_diagnostics_exposes_loss_causes_and_cost_drag():
     assert d["by_entry_score_bucket"]["0.8-0.9"]["n_trades"] == 2
     assert d["by_entry_score_bucket"]["0.9-1.0"]["n_trades"] == 2
     assert d["by_entry_votes"]["2"]["net_profit"] == 150.0
+    assert d["hard_stop_count"] == 0
+    assert d["hard_stop_rate"] == 0.0
 
 
 def test_empty_diagnostics_are_json_safe_and_zeroed():
@@ -59,6 +63,30 @@ def test_empty_diagnostics_are_json_safe_and_zeroed():
     assert d["by_exit_year"] == {}
     assert d["by_entry_score_bucket"] == {}
     assert d["by_entry_votes"] == {}
+    assert d["by_entry_factor"] == {}
+
+
+def test_entry_factor_buckets_show_where_hard_stops_cluster():
+    trades = [
+        _trade(2024, -30.0, -0.03, "hard_stop", 2,
+               factors={"swing_trend.roc_120": 0.52,
+                        "execution.initial_stop_distance_pct": -0.01}),
+        _trade(2024, -20.0, -0.02, "hard_stop", 3,
+               factors={"swing_trend.roc_120": 0.61,
+                        "execution.initial_stop_distance_pct": 0.02}),
+        _trade(2024, 80.0, 0.08, "target", 8,
+               factors={"swing_trend.roc_120": 0.22,
+                        "execution.initial_stop_distance_pct": 0.08}),
+    ]
+    factors = trade_diagnostics(trades)["by_entry_factor"]
+
+    roc = factors["swing_trend.roc_120"]
+    assert roc["label"] == "120봉 수익률"
+    assert roc["buckets"]["45%~75%"]["hard_stop_rate"] == 1.0
+    assert roc["buckets"]["15%~30%"]["hard_stop_rate"] == 0.0
+    stop = factors["execution.initial_stop_distance_pct"]["buckets"]
+    assert stop["<0%"]["hard_stop_count"] == 1
+    assert stop["6%~10%"]["net_profit"] == 80.0
 
 
 def test_walkforward_combined_diagnostics_equal_oos_fold_totals():

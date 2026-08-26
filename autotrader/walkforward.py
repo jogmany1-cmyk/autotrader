@@ -30,6 +30,7 @@ Overfitting", https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2308659).
 from __future__ import annotations
 
 import copy
+import math
 import statistics as stats
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -51,6 +52,23 @@ MIN_TOTAL_TRADES = 100
 MIN_TRADES_PER_FOLD = 20
 MIN_FOLDS_WITH_PF_ABOVE_ONE = 3      # 4개 중
 MAX_PROFIT_CONCENTRATION = 0.50      # 한 fold 가 전체 gross profit 의 이 비율 초과 시 실패
+EXPLORATORY_REFERENCE_ROUND = 3
+OOS_RESULT_EXPOSURES_AFTER_FACTOR_DIAGNOSTIC = 4
+FINAL_DECISION_SOURCE = "future-data-paper-trading-min-60-trading-days"
+
+# ---- 진입 조건 진단 구간 (결과를 보기 전에 고정) --------------------------
+# 모든 값은 비율이다. 경계는 [아래, 위)이며 마지막 구간만 위쪽이 열려 있다.
+# raw_strength 만 0..1 정규화 전 원점수라 퍼센트로 표시하지 않는다.
+ENTRY_FACTOR_SPECS = {
+    "swing_trend.raw_strength": ("clip 전 원점수", (0.65, 0.80, 0.95, 1.25), False),
+    "swing_trend.roc_120": ("120봉 수익률", (0.15, 0.30, 0.45, 0.75), True),
+    "swing_trend.fast_slow_gap": ("50/200 이동평균 간격", (0.03, 0.07, 0.15, 0.30), True),
+    "swing_trend.price_fast_gap": ("종가/50 이동평균 간격", (0.03, 0.07, 0.15, 0.30), True),
+    "swing_trend.atr_pct": ("ATR/종가", (0.02, 0.04, 0.06, 0.10), True),
+    "execution.entry_gap_pct": ("다음 시가 갭", (-0.03, -0.01, 0.01, 0.03), True),
+    "execution.initial_stop_distance_pct": ("체결가 대비 초기 손절 거리",
+                                               (0.00, 0.03, 0.06, 0.10, 0.20), True),
+}
 
 
 @dataclass(frozen=True)
@@ -141,6 +159,7 @@ def _trade_group_stats(trades: Sequence[Trade]) -> Dict[str, object]:
     losses = [t.pnl for t in trades if t.pnl < 0]
     gp, gl = gross_profit(pnls), gross_loss(pnls)
     n = len(trades)
+    hard_stops = sum(t.exit_reason == "hard_stop" for t in trades)
     return {
         "n_trades": n,
         "wins": len(wins),
@@ -173,7 +192,30 @@ def _trade_group_stats(trades: Sequence[Trade]) -> Dict[str, object]:
                                if trades else 0.0),
         "avg_entry_votes": (round(stats.fmean(t.entry_votes for t in trades), 3)
                             if trades else 0.0),
+        "hard_stop_count": hard_stops,
+        "hard_stop_rate": round(hard_stops / n, 4) if n else 0.0,
     }
+
+
+def _factor_bucket_index(value: float, bounds: Sequence[float]) -> int:
+    for index, upper in enumerate(bounds):
+        if value < upper:
+            return index
+    return len(bounds)
+
+
+def _format_factor_value(value: float, percent: bool) -> str:
+    return f"{value * 100:.0f}%" if percent else f"{value:.2f}"
+
+
+def _factor_bucket_label(index: int, bounds: Sequence[float],
+                         percent: bool) -> str:
+    if index == 0:
+        return f"<{_format_factor_value(bounds[0], percent)}"
+    if index == len(bounds):
+        return f">={_format_factor_value(bounds[-1], percent)}"
+    return (f"{_format_factor_value(bounds[index - 1], percent)}~"
+            f"{_format_factor_value(bounds[index], percent)}")
 
 
 def trade_diagnostics(trades: Sequence[Trade], total_cost: float = 0.0
@@ -190,6 +232,7 @@ def trade_diagnostics(trades: Sequence[Trade], total_cost: float = 0.0
     by_year: Dict[str, List[Trade]] = {}
     by_score: Dict[str, List[Trade]] = {}
     by_votes: Dict[str, List[Trade]] = {}
+    by_factor: Dict[str, Dict[int, List[Trade]]] = {}
     for trade in trades:
         by_reason.setdefault(trade.exit_reason, []).append(trade)
         by_year.setdefault(str(trade.exit_ts.year), []).append(trade)
@@ -200,6 +243,12 @@ def trade_diagnostics(trades: Sequence[Trade], total_cost: float = 0.0
             score_bucket = f"{lo:.1f}-{lo + 0.1:.1f}"
         by_score.setdefault(score_bucket, []).append(trade)
         by_votes.setdefault(str(trade.entry_votes), []).append(trade)
+        for factor, value in trade.entry_factors.items():
+            spec = ENTRY_FACTOR_SPECS.get(factor)
+            if spec is None or not math.isfinite(value):
+                continue
+            index = _factor_bucket_index(value, spec[1])
+            by_factor.setdefault(factor, {}).setdefault(index, []).append(trade)
     gp = float(summary["gross_profit"])
     summary.update({
         "total_cost": round(total_cost, 2),
@@ -213,6 +262,18 @@ def trade_diagnostics(trades: Sequence[Trade], total_cost: float = 0.0
                                   for k, v in sorted(by_score.items())},
         "by_entry_votes": {k: _trade_group_stats(v)
                            for k, v in sorted(by_votes.items(), key=lambda x: int(x[0]))},
+        "by_entry_factor": {
+            factor: {
+                "label": ENTRY_FACTOR_SPECS[factor][0],
+                "buckets": {
+                    _factor_bucket_label(index, ENTRY_FACTOR_SPECS[factor][1],
+                                         ENTRY_FACTOR_SPECS[factor][2]):
+                    _trade_group_stats(group)
+                    for index, group in sorted(groups.items())
+                },
+            }
+            for factor, groups in sorted(by_factor.items())
+        },
     })
     return summary
 
@@ -524,6 +585,10 @@ def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
                      "merged_union_bars": len(full_timeline),
                      "trimmed_leading_bars": trimmed,
                      "candidate_selection": CANDIDATE_SELECTION,
+                     "exploratory_reference_round": EXPLORATORY_REFERENCE_ROUND,
+                     "oos_result_exposures_after_factor_diagnostic":
+                         OOS_RESULT_EXPOSURES_AFTER_FACTOR_DIAGNOSTIC,
+                     "final_decision_source": FINAL_DECISION_SOURCE,
                      "costs": {"commission_bp": config.costs.commission_bp,
                                "tax_sell_bp": config.costs.tax_sell_bp,
                                "slippage_bp": config.costs.slippage_bp}},

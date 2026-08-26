@@ -6,7 +6,7 @@ BUY 를 낸다 — 단일 전략의 우연한 신호를 걸러 낸다.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Sequence, Tuple
 
 from ..config import StrategyWeights
@@ -22,6 +22,7 @@ class EnsembleDecision:
     stop_hint: float
     target_hint: float
     detail: Dict[str, float]
+    factors: Dict[str, float] = field(default_factory=dict)
 
 
 class Ensemble:
@@ -43,6 +44,7 @@ class Ensemble:
         stops: List[Tuple[float, float]] = []
         targets: List[Tuple[float, float]] = []
         detail: Dict[str, float] = {}
+        factors: Dict[str, float] = {}
         reasons: List[str] = []
         for strat in self.strategies:
             w = getattr(self.weights, strat.name, 0.0) or 0.0
@@ -51,6 +53,9 @@ class Ensemble:
             res = strat.evaluate(ctx)
             sig = res.signal.clamped()
             detail[strat.name] = sig.strength if sig.side is Side.BUY else 0.0
+            if sig.side is Side.BUY:
+                factors.update({f"{strat.name}.{key}": float(value)
+                                for key, value in res.factors.items()})
             if self.score_mode == "all-weights":
                 total_w += w
             if sig.side is Side.BUY and sig.strength > 0:
@@ -69,6 +74,7 @@ class Ensemble:
                 Signal.hold(f"score {score:.2f} votes {votes}"),
                 score=score, votes=votes,
                 stop_hint=0.0, target_hint=0.0, detail=detail,
+                factors=factors,
             )
         stop = _weighted(stops) if stops else 0.0
         target = _weighted(targets) if targets else 0.0
@@ -76,6 +82,7 @@ class Ensemble:
             Signal(Side.BUY, score, ", ".join(reasons)),
             score=score, votes=votes,
             stop_hint=stop, target_hint=target, detail=detail,
+            factors=factors,
         )
 
 
