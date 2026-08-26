@@ -129,6 +129,8 @@ def snapshot_positions(positions: Dict[str, Position]) -> Dict[str, dict]:
             "bars_held": p.bars_held,
             "stop_from_trail": p.stop_from_trail,
             "trail_pct": p.trail_pct,
+            "entry_score": p.entry_score,
+            "entry_votes": p.entry_votes,
         }
     return out
 
@@ -189,6 +191,8 @@ def reconcile_positions(broker_positions: Dict[str, Position],
             bars_held=was,
             stop_from_trail=bool(m.get("stop_from_trail")),
             trail_pct=m.get("trail_pct"),
+            entry_score=float(m.get("entry_score") or 0.0),
+            entry_votes=int(m.get("entry_votes") or 0),
         )
         out[sym] = pos
         prev_qty = int(m.get("qty", bp.qty)) if "qty" in m else bp.qty

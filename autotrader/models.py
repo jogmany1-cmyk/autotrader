@@ -127,6 +127,8 @@ class Position:
     # 진입 시점 ATR 로 계산해 종목별 변동성을 반영한다.
     trail_pct: Optional[float] = None
     meta: Dict[str, float] = field(default_factory=dict)
+    entry_score: float = 0.0
+    entry_votes: int = 0
 
     def market_value(self, price: float) -> float:
         return self.qty * price
@@ -161,6 +163,8 @@ class Trade:
     return_pct: float
     exit_reason: str
     bars_held: int
+    entry_score: float = 0.0
+    entry_votes: int = 0
 
 
 @dataclass

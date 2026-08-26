@@ -390,7 +390,8 @@ class LiveTrader:
                     bo = self.broker.submit(
                         order, price_hint=price, ts=now,
                         stop=dec.stop_hint, target=dec.target_hint,
-                        trail=self._trail_for(bars, len(bars) - 1, price))
+                        trail=self._trail_for(bars, len(bars) - 1, price),
+                        entry_score=dec.score, entry_votes=dec.votes)
                 else:
                     bo = self.broker.submit(order, price_hint=price)
                 self.book.add(bo)
@@ -412,6 +413,7 @@ class LiveTrader:
                     symbol=cand.symbol, qty=decision.qty, avg_price=price,
                     opened_at=now, stop_price=dec.stop_hint,
                     take_price=dec.target_hint,
+                    entry_score=dec.score, entry_votes=dec.votes,
                 )
                 prices.setdefault(cand.symbol, price)
                 self.risk.register_entry()
@@ -499,7 +501,9 @@ class LiveTrader:
                                   tag=f"stream:{dec.signal.reason[:24]}")
                     if isinstance(self.broker, PaperBroker):
                         self.broker.submit(order, price_hint=price, ts=now,
-                                           stop=dec.stop_hint, target=dec.target_hint)
+                                           stop=dec.stop_hint, target=dec.target_hint,
+                                           entry_score=dec.score,
+                                           entry_votes=dec.votes)
                     else:
                         self.broker.submit(order, price_hint=price)
                     report.orders_placed += 1

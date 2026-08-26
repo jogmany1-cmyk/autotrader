@@ -6,22 +6,22 @@ from autotrader.models import Trade
 from autotrader.walkforward import combine_entry_funnels, trade_diagnostics
 
 
-def _trade(year, pnl, return_pct, reason, bars):
+def _trade(year, pnl, return_pct, reason, bars, score=0.0, votes=0):
     return Trade(
         symbol="TST", entry_ts=datetime(year, 1, 2),
         exit_ts=datetime(year, 2, 2), qty=1,
         entry_price=100.0, exit_price=100.0 + pnl,
         pnl=pnl, return_pct=return_pct, exit_reason=reason,
-        bars_held=bars,
+        bars_held=bars, entry_score=score, entry_votes=votes,
     )
 
 
 def test_trade_diagnostics_exposes_loss_causes_and_cost_drag():
     trades = [
-        _trade(2024, 100.0, 0.10, "target", 5),
-        _trade(2024, -50.0, -0.05, "stop", 2),
-        _trade(2025, 50.0, 0.05, "target", 4),
-        _trade(2025, 0.0, 0.00, "time_exit", 10),
+        _trade(2024, 100.0, 0.10, "target", 5, 0.91, 2),
+        _trade(2024, -50.0, -0.05, "stop", 2, 0.86, 1),
+        _trade(2025, 50.0, 0.05, "target", 4, 0.93, 2),
+        _trade(2025, 0.0, 0.00, "time_exit", 10, 0.86, 1),
     ]
     d = trade_diagnostics(trades, total_cost=30.0)
 
@@ -42,6 +42,11 @@ def test_trade_diagnostics_exposes_loss_causes_and_cost_drag():
     assert d["by_exit_reason"]["stop"]["net_profit"] == -50.0
     assert set(d["by_exit_year"]) == {"2024", "2025"}
     assert d["by_exit_year"]["2024"]["net_profit"] == 50.0
+    assert d["avg_entry_score"] == pytest.approx(0.89)
+    assert d["avg_entry_votes"] == pytest.approx(1.5)
+    assert d["by_entry_score_bucket"]["0.8-0.9"]["n_trades"] == 2
+    assert d["by_entry_score_bucket"]["0.9-1.0"]["n_trades"] == 2
+    assert d["by_entry_votes"]["2"]["net_profit"] == 150.0
 
 
 def test_empty_diagnostics_are_json_safe_and_zeroed():
@@ -52,6 +57,8 @@ def test_empty_diagnostics_are_json_safe_and_zeroed():
     assert d["cost_drag_vs_gross_profit"] is None
     assert d["by_exit_reason"] == {}
     assert d["by_exit_year"] == {}
+    assert d["by_entry_score_bucket"] == {}
+    assert d["by_entry_votes"] == {}
 
 
 def test_walkforward_combined_diagnostics_equal_oos_fold_totals():

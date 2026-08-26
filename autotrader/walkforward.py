@@ -167,6 +167,12 @@ def _trade_group_stats(trades: Sequence[Trade]) -> Dict[str, object]:
                           if trades else 0.0),
         "median_bars_held": (round(stats.median(t.bars_held for t in trades), 2)
                              if trades else 0.0),
+        "avg_entry_score": (round(stats.fmean(t.entry_score for t in trades), 6)
+                            if trades else 0.0),
+        "median_entry_score": (round(stats.median(t.entry_score for t in trades), 6)
+                               if trades else 0.0),
+        "avg_entry_votes": (round(stats.fmean(t.entry_votes for t in trades), 3)
+                            if trades else 0.0),
     }
 
 
@@ -182,9 +188,18 @@ def trade_diagnostics(trades: Sequence[Trade], total_cost: float = 0.0
     summary = _trade_group_stats(trades)
     by_reason: Dict[str, List[Trade]] = {}
     by_year: Dict[str, List[Trade]] = {}
+    by_score: Dict[str, List[Trade]] = {}
+    by_votes: Dict[str, List[Trade]] = {}
     for trade in trades:
         by_reason.setdefault(trade.exit_reason, []).append(trade)
         by_year.setdefault(str(trade.exit_ts.year), []).append(trade)
+        if trade.entry_score <= 0:
+            score_bucket = "unknown"
+        else:
+            lo = min(int(trade.entry_score * 10), 9) / 10
+            score_bucket = f"{lo:.1f}-{lo + 0.1:.1f}"
+        by_score.setdefault(score_bucket, []).append(trade)
+        by_votes.setdefault(str(trade.entry_votes), []).append(trade)
     gp = float(summary["gross_profit"])
     summary.update({
         "total_cost": round(total_cost, 2),
@@ -194,6 +209,10 @@ def trade_diagnostics(trades: Sequence[Trade], total_cost: float = 0.0
                            for k, v in sorted(by_reason.items())},
         "by_exit_year": {k: _trade_group_stats(v)
                          for k, v in sorted(by_year.items())},
+        "by_entry_score_bucket": {k: _trade_group_stats(v)
+                                  for k, v in sorted(by_score.items())},
+        "by_entry_votes": {k: _trade_group_stats(v)
+                           for k, v in sorted(by_votes.items(), key=lambda x: int(x[0]))},
     })
     return summary
 
@@ -419,7 +438,7 @@ def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
     "1291번째 봉" 을 종목별 인덱스로 잡으면 종목마다 다른 날짜가 된다. 모든
     종목의 날짜 합집합을 정렬한 축 위에서 fold 를 자른다.
     """
-    from .backtest import _merge_timeline
+    from .backtest import CANDIDATE_SELECTION, _merge_timeline
 
     if score_mode not in SCORE_MODES:
         raise ValueError(f"score_mode 는 {SCORE_MODES} 중 하나여야 합니다")
@@ -504,6 +523,7 @@ def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
                      "timeline_end": timeline[-1].date().isoformat(),
                      "merged_union_bars": len(full_timeline),
                      "trimmed_leading_bars": trimmed,
+                     "candidate_selection": CANDIDATE_SELECTION,
                      "costs": {"commission_bp": config.costs.commission_bp,
                                "tax_sell_bp": config.costs.tax_sell_bp,
                                "slippage_bp": config.costs.slippage_bp}},

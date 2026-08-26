@@ -38,7 +38,9 @@ class PaperBroker(Broker):
                ts: Optional[datetime] = None,
                stop: Optional[float] = None,
                target: Optional[float] = None,
-               trail: Optional[float] = None) -> BrokerOrder:
+               trail: Optional[float] = None,
+               entry_score: float = 0.0,
+               entry_votes: int = 0) -> BrokerOrder:
         ts = ts or now_kst()
         slip = self.costs.slippage_bp / 10_000
         if order.side is Side.BUY:
@@ -56,7 +58,8 @@ class PaperBroker(Broker):
         if order.side is Side.BUY and cost > self.portfolio.cash + 1e-6:
             raise BrokerError(f"cash insufficient: need {cost:.0f}, have {self.portfolio.cash:.0f}")
         trade = self.portfolio.apply_fill(fill, stop=stop, target=target,
-                                          trail=trail)
+                                          trail=trail, entry_score=entry_score,
+                                          entry_votes=entry_votes)
         self.fills.append(fill)
         # 페이퍼는 즉시 전량 체결로 모델링한다 — 접수/체결을 나눌 필요가 없다.
         # 그래도 반환 타입은 실브로커와 같게 맞춘다. 호출부가 두 브로커를

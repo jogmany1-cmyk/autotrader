@@ -1,4 +1,5 @@
 from datetime import datetime
+import pytest
 from autotrader.broker import PaperBroker
 from autotrader.config import Costs
 from autotrader.models import Bar, Order, Side
@@ -21,6 +22,17 @@ def test_roundtrip_pnl_after_fees_and_tax():
     assert trade.exit_reason == "target"
     assert trade.pnl > 0
     assert b.cash() > 1_000_000  # 최종 순이익
+
+
+def test_entry_score_and_votes_survive_until_closed_trade():
+    b = PaperBroker(1_000_000, Costs())
+    b.submit(Order("A", Side.BUY, 100), price_hint=1000,
+             ts=datetime(2024, 1, 2), stop=970, target=1030,
+             entry_score=0.87, entry_votes=2)
+    closed = b.mark({"A": _bar(1050, high=1050, low=1000)},
+                    datetime(2024, 1, 3))
+    assert closed[0].entry_score == pytest.approx(0.87)
+    assert closed[0].entry_votes == 2
 
 
 def test_stop_triggers_when_low_breaches():

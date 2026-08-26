@@ -39,7 +39,8 @@ def test_our_record_supplies_what_the_broker_cannot_know():
     복구하지 않으면 재시작 이후 그 포지션에는 스탑이 영원히 걸리지 않는다.
     """
     ours = _pos(stop_price=66_000.0, take_price=80_000.0, trail_pct=0.106,
-                highest_close=75_000.0, bars_held=7, stop_from_trail=True)
+                highest_close=75_000.0, bars_held=7, stop_from_trail=True,
+                entry_score=0.88, entry_votes=3)
     state = SessionState(position_meta=snapshot_positions({"005930": ours}))
     # 브로커가 주는 것에는 이 값들이 전부 비어 있다
     bare = _pos(opened_at=datetime(2026, 8, 24, 15, 0))
@@ -51,6 +52,8 @@ def test_our_record_supplies_what_the_broker_cannot_know():
     assert pos.highest_close == 75_000.0
     assert pos.bars_held == 7
     assert pos.stop_from_trail is True
+    assert pos.entry_score == pytest.approx(0.88)
+    assert pos.entry_votes == 3
     assert pos.opened_at == datetime(2024, 1, 5, 9, 30), \
         "진입 시각이 재시작 시각으로 덮여 보유기간 청산이 리셋됐다"
 

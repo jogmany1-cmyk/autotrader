@@ -29,6 +29,8 @@ from .strategy import (DayBreakout, DayMomentum, DayPullback, Ensemble,
 from .strategy.base import Strategy, StrategyContext
 from .tracker import Prediction, PredictionTracker
 
+CANDIDATE_SELECTION = "score-desc-symbol-asc"
+
 
 @dataclass
 class BacktestReport:
@@ -180,6 +182,10 @@ class Backtester:
             cooldown.purge_expired(ts.date())
 
             # 2.1 대기 주문 체결(전일 신호 → 오늘 시가)
+            # 포지션 자리가 부족할 때 파일/유니버스 순서가 종목을 결정하면 같은
+            # 데이터도 입력 순서만 바꿔 성과가 달라진다. 전일 확정 점수가 높은
+            # 후보부터, 동점이면 종목코드 순으로 처리한다.
+            pending.sort(key=lambda row: (-row[4], row[0]))
             for sym, stop, target, tag, score, votes, detail in pending:
                 entry_funnel["pending_attempts"] += 1
                 bar = todays_bars.get(sym)
@@ -219,6 +225,7 @@ class Backtester:
                         Order(sym, Side.BUY, decision.qty, tag=tag),
                         price_hint=price, ts=ts, stop=stop, target=target,
                         trail=self._trail_for(sym_bars, sym_idx - 1, price),
+                        entry_score=score, entry_votes=votes,
                     )
                     risk.register_entry()
                     entry_funnel["entries_filled"] += 1

@@ -297,6 +297,13 @@ def cmd_walkforward(args) -> int:
             for reason, count in sorted(funnel["risk_rejections"].items(),
                                         key=lambda item: (-item[1], item[0])))
         print(f"  리스크 거절: {rejects}")
+    print(f"  진입 점수: 평균={d['avg_entry_score']:.3f}  "
+          f"중앙={d['median_entry_score']:.3f}  평균투표={d['avg_entry_votes']:.2f}")
+    print("  점수 구간별:")
+    for bucket, row in d["by_entry_score_bucket"].items():
+        pf = "-" if row["profit_factor"] is None else f"{row['profit_factor']:.2f}"
+        print(f"    {bucket:<9} {row['n_trades']:>5}건  승률 {row['win_rate']:>6.1%}  "
+              f"PF {pf:>6}  손익 {row['net_profit']:>12,.0f}")
     print("  청산 사유별 (손익이 나쁜 순):")
     reasons = sorted(d["by_exit_reason"].items(),
                      key=lambda item: item[1]["net_profit"])

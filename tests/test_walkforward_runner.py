@@ -137,6 +137,18 @@ class _AlwaysBuy(Strategy):
                               stop_hint=px * 0.5, target_hint=px * 5.0)
 
 
+class _RankedBuy(Strategy):
+    """종목코드 끝자리로 서로 다른 점수를 내는 후보 정렬용 stub."""
+    name = "swing_trend"
+    warmup = 5
+
+    def evaluate(self, ctx):
+        px = ctx.bars[ctx.at].close
+        strength = 0.50 + int(ctx.symbol[-1]) * 0.05
+        return StrategyResult(Signal(Side.BUY, strength, "ranked"),
+                              stop_hint=px * 0.5, target_hint=px * 5.0)
+
+
 def test_window_end_actually_closes_open_positions(prov, timeline):
     """창 끝 강제청산이 실제로 일어나는지 — 포지션이 보장되는 stub 으로 본다.
 
@@ -173,6 +185,40 @@ def test_entry_funnel_is_wired_to_real_backtest_decisions(prov, timeline):
         f["entries_filled"] + sum(f["risk_rejections"].values())
         + f["no_next_bar"] + f["cooldown_blocked_at_fill"]
         + f["broker_errors"])
+
+
+def test_candidate_selection_is_invariant_to_universe_order(prov, timeline):
+    """입력 순서만 뒤집어도 선택 종목·성과가 같아야 한다."""
+    lo, hi = timeline[299], timeline[349]
+    symbols = prov.universe()
+
+    def run(order):
+        cfg = _cfg()
+        cfg.risk.max_positions = 2
+        return Backtester(prov, cfg, strategies=[_AlwaysBuy()],
+                          ensemble_threshold=0.45, history_bars=700,
+                          trade_window=(lo, hi)).run(symbols=order)
+
+    forward, reverse = run(symbols), run(list(reversed(symbols)))
+    key = lambda rep: [(t.symbol, t.entry_ts, t.exit_ts, t.pnl) for t in rep.trades]
+    assert key(forward) == key(reverse)
+    assert forward.all.net_return == reverse.all.net_return
+
+
+def test_candidate_selection_prefers_higher_score(prov, timeline):
+    """빈자리 하나에는 종목코드 순이 아니라 가장 높은 점수가 들어간다."""
+    lo, hi = timeline[299], timeline[319]
+    cfg = _cfg()
+    cfg.risk.max_positions = 1
+    symbols = ["S0000", "S0001", "S0002"]
+    rep = Backtester(prov, cfg, strategies=[_RankedBuy()],
+                     ensemble_threshold=0.45, history_bars=700,
+                     trade_window=(lo, hi)).run(symbols=list(reversed(symbols)))
+
+    assert rep.trades
+    assert rep.trades[0].symbol == "S0002"
+    assert rep.trades[0].entry_score == pytest.approx(0.60)
+    assert rep.trades[0].entry_votes == 1
 
 
 def test_window_end_closes_symbols_absent_on_the_final_date():
@@ -301,6 +347,7 @@ def test_runner_produces_a_serialisable_report_end_to_end():
     assert len(rep["folds"]) == 1
     assert rep["excluded_tail_bars"] == [0, 0]        # 딱 맞아떨어짐
     assert rep["settings"]["threshold"] == 0.45
+    assert rep["settings"]["candidate_selection"] == "score-desc-symbol-asc"
     assert rep["settings"]["costs"]["slippage_bp"] == _cfg().costs.slippage_bp
 
     f = rep["folds"][0]
