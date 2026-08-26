@@ -280,6 +280,32 @@ def cmd_walkforward(args) -> int:
     print()
     print(f"  합산 OOS: PF={c['profit_factor']:.3f}  순수익={c['net_profit']:,.0f}  "
           f"거래={c['n_trades']}  집중도={c['profit_concentration']:.3f}")
+    d = c["diagnostics"]
+    print(f"  거래 진단: 승률={d['win_rate']:.1%}  평균승={d['avg_win']:,.0f}  "
+          f"평균패={d['avg_loss']:,.0f}  평균보유={d['avg_bars_held']:.1f}봉")
+    print(f"  비용 진단: 비용후={d['net_profit']:,.0f}  "
+          f"총비용={d['total_cost']:,.0f}  "
+          f"비용전(추정)={d['estimated_pre_cost_net']:,.0f}")
+    funnel = c["entry_funnel"]
+    print(f"  진입 흐름: 평가={funnel['strategy_evaluations']:,}  "
+          f"매수신호={funnel['buy_signals']:,}({funnel['buy_signal_rate']:.2%})  "
+          f"주문시도={funnel['pending_attempts']:,}  "
+          f"체결={funnel['entries_filled']:,}({funnel['fill_rate_from_attempts']:.1%})")
+    if funnel["risk_rejections"]:
+        rejects = ", ".join(
+            f"{reason}={count:,}"
+            for reason, count in sorted(funnel["risk_rejections"].items(),
+                                        key=lambda item: (-item[1], item[0])))
+        print(f"  리스크 거절: {rejects}")
+    print("  청산 사유별 (손익이 나쁜 순):")
+    reasons = sorted(d["by_exit_reason"].items(),
+                     key=lambda item: item[1]["net_profit"])
+    for reason, row in reasons:
+        pf = "-" if row["profit_factor"] is None else f"{row['profit_factor']:.2f}"
+        print(f"    {reason:<12} {row['n_trades']:>5}건  "
+              f"승률 {row['win_rate']:>6.1%}  PF {pf:>6}  "
+              f"손익 {row['net_profit']:>12,.0f}  "
+              f"보유 {row['avg_bars_held']:>5.1f}봉")
     print()
     for chk in rep["verdict"]["checks"]:
         print(f"  [{'PASS' if chk['ok'] else 'FAIL'}] {chk['name']:<22} {chk['detail']}")

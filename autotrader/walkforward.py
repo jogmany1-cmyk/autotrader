@@ -30,8 +30,11 @@ Overfitting", https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2308659).
 from __future__ import annotations
 
 import copy
+import statistics as stats
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
+
+from .models import Trade
 
 # ---- 배치 규격 (실행 전 고정. 결과를 보고 바꾸지 않는다) --------------------
 TRAIN_MIN_BARS = 1000      # fold 1 의 TRAIN 길이. expanding 이므로 시작점은 항상 1
@@ -130,6 +133,94 @@ def gross_loss(pnls: Sequence[float]) -> float:
     return sum(-p for p in pnls if p < 0)
 
 
+def _trade_group_stats(trades: Sequence[Trade]) -> Dict[str, object]:
+    """동질적인 거래 묶음의 손익·승패·보유기간을 요약한다."""
+    trades = list(trades)
+    pnls = [t.pnl for t in trades]
+    wins = [t.pnl for t in trades if t.pnl > 0]
+    losses = [t.pnl for t in trades if t.pnl < 0]
+    gp, gl = gross_profit(pnls), gross_loss(pnls)
+    n = len(trades)
+    return {
+        "n_trades": n,
+        "wins": len(wins),
+        "losses": len(losses),
+        "breakeven": n - len(wins) - len(losses),
+        "win_rate": round(len(wins) / n, 4) if n else 0.0,
+        "net_profit": round(sum(pnls), 2),
+        "gross_profit": round(gp, 2),
+        "gross_loss": round(gl, 2),
+        # 손실이 없으면 무한대 대신 null. JSON 소비자가 Infinity 를 숫자로
+        # 오인하지 않게 한다.
+        "profit_factor": round(gp / gl, 4) if gl > 0 else None,
+        "avg_pnl": round(stats.fmean(pnls), 2) if pnls else 0.0,
+        "median_pnl": round(stats.median(pnls), 2) if pnls else 0.0,
+        "avg_win": round(stats.fmean(wins), 2) if wins else 0.0,
+        "avg_loss": round(stats.fmean(losses), 2) if losses else 0.0,
+        "payoff_ratio": (round(stats.fmean(wins) / abs(stats.fmean(losses)), 4)
+                         if wins and losses else None),
+        "avg_return_pct": (round(stats.fmean(t.return_pct for t in trades), 6)
+                           if trades else 0.0),
+        "median_return_pct": (round(stats.median(t.return_pct for t in trades), 6)
+                              if trades else 0.0),
+        "avg_bars_held": (round(stats.fmean(t.bars_held for t in trades), 2)
+                          if trades else 0.0),
+        "median_bars_held": (round(stats.median(t.bars_held for t in trades), 2)
+                             if trades else 0.0),
+    }
+
+
+def trade_diagnostics(trades: Sequence[Trade], total_cost: float = 0.0
+                      ) -> Dict[str, object]:
+    """거래별 손실 원인 진단.
+
+    Trade.pnl 은 수수료·세금과 체결가 슬리피지가 이미 반영된 값이다. 비용 전
+    손익은 감사 리포트의 세 비용을 더해 되짚은 **추정치**일 뿐이며, 성과에
+    다시 반영하지 않는다(이중 차감 금지).
+    """
+    trades = list(trades)
+    summary = _trade_group_stats(trades)
+    by_reason: Dict[str, List[Trade]] = {}
+    by_year: Dict[str, List[Trade]] = {}
+    for trade in trades:
+        by_reason.setdefault(trade.exit_reason, []).append(trade)
+        by_year.setdefault(str(trade.exit_ts.year), []).append(trade)
+    gp = float(summary["gross_profit"])
+    summary.update({
+        "total_cost": round(total_cost, 2),
+        "estimated_pre_cost_net": round(float(summary["net_profit"]) + total_cost, 2),
+        "cost_drag_vs_gross_profit": (round(total_cost / gp, 4) if gp > 0 else None),
+        "by_exit_reason": {k: _trade_group_stats(v)
+                           for k, v in sorted(by_reason.items())},
+        "by_exit_year": {k: _trade_group_stats(v)
+                         for k, v in sorted(by_year.items())},
+    })
+    return summary
+
+
+def combine_entry_funnels(funnels: Sequence[Dict[str, object]]) -> Dict[str, object]:
+    """독립 실행된 OOS fold들의 진입 감사 계수를 합친다."""
+    out: Dict[str, object] = {k: 0 for k in (
+        "strategy_evaluations", "buy_signals", "pending_attempts",
+        "entries_filled", "no_next_bar", "cooldown_blocked_at_fill",
+        "broker_errors", "skipped_already_held",
+        "skipped_cooldown_before_signal", "unprocessed_at_window_end")}
+    risk: Dict[str, int] = {}
+    for funnel in funnels:
+        for key in out:
+            out[key] = int(out[key]) + int(funnel.get(key, 0))
+        for reason, count in dict(funnel.get("risk_rejections", {})).items():
+            risk[reason] = risk.get(reason, 0) + int(count)
+    out["risk_rejections"] = dict(sorted(risk.items()))
+    evaluations = int(out["strategy_evaluations"])
+    out["buy_signal_rate"] = (round(int(out["buy_signals"]) / evaluations, 6)
+                              if evaluations else 0.0)
+    attempts = int(out["pending_attempts"])
+    out["fill_rate_from_attempts"] = (round(int(out["entries_filled"]) / attempts, 6)
+                                      if attempts else 0.0)
+    return out
+
+
 def combined_profit_factor(pnls_by_fold: Sequence[Sequence[float]]) -> float:
     """합산 OOS PF = 전체 총이익 ÷ 전체 총손실.
 
@@ -201,10 +292,12 @@ class SegmentResult:
     end: str
     n_trades: int
     trade_pnls: List[float]          # 수수료·세금·슬리피지 반영된 체결 기준
+    trades: List[Trade]              # JSON에는 원문 대신 diagnostics만 저장
     net_return: float
     profit_factor: float
     max_drawdown: float
     cost: Dict[str, float]
+    entry_funnel: Dict[str, object]
     # 창 끝 강제청산 건수와 그 PnL. 인위적 청산이 성적의 얼마를 차지하는지
     # 보이지 않으면, 창 경계가 결과를 만들고 있어도 알 수 없다.
     window_end_trades: int = 0
@@ -220,6 +313,9 @@ class SegmentResult:
                 "net_return": self.net_return,
                 "profit_factor": self.profit_factor,
                 "max_drawdown": self.max_drawdown, "cost": self.cost,
+                "entry_funnel": self.entry_funnel,
+                "diagnostics": trade_diagnostics(
+                    self.trades, float(self.cost.get("total_cost", 0.0))),
                 "window_end_trades": self.window_end_trades,
                 "window_end_pnl": round(self.window_end_pnl, 2),
                 "unclosed_exposure": self.unclosed_exposure}
@@ -299,10 +395,11 @@ def _segment(name: str, window: Tuple[int, int], timeline, provider, config,
     return SegmentResult(
         name=name, window=window,
         start=start.date().isoformat(), end=end.date().isoformat(),
-        n_trades=len(trades), trade_pnls=[t.pnl for t in trades],
+        n_trades=len(trades), trade_pnls=[t.pnl for t in trades], trades=trades,
         net_return=rep.all.net_return, profit_factor=rep.all.profit_factor,
         max_drawdown=rep.all.max_drawdown,
         cost=(c.to_dict() if c is not None else {}),
+        entry_funnel=combine_entry_funnels([rep.entry_funnel]),
         window_end_trades=len(forced),
         window_end_pnl=sum(t.pnl for t in forced),
         # 강제청산 뒤에도 노출이 남았다면 청산되지 못한 포지션이 있다는 뜻이다.
@@ -382,6 +479,9 @@ def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
         ))
 
     oos_pnls = [r.oos.trade_pnls for r in results]
+    oos_trades = [t for r in results for t in r.oos.trades]
+    oos_cost = sum(float(r.oos.cost.get("total_cost", 0.0)) for r in results)
+    oos_funnel = combine_entry_funnels([r.oos.entry_funnel for r in results])
     worst_dd = min((r.oos.max_drawdown for r in results), default=0.0)
     verdict = judge(oos_pnls, worst_dd)
     tail = unused_tail(n_bars)
@@ -419,6 +519,8 @@ def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
             "n_trades": sum(len(p) for p in oos_pnls),
             "worst_fold_max_drawdown": round(worst_dd, 4),
             "profit_concentration": round(profit_concentration(oos_pnls), 4),
+            "diagnostics": trade_diagnostics(oos_trades, oos_cost),
+            "entry_funnel": oos_funnel,
         },
         # 조용히 버리면 "전 구간을 썼다" 고 오해하게 된다.
         "excluded_tail_bars": list(tail),

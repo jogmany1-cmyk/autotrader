@@ -155,6 +155,26 @@ def test_window_end_actually_closes_open_positions(prov, timeline):
         rep.equity_curve[-1].cash, rel=1e-9)
 
 
+def test_entry_funnel_is_wired_to_real_backtest_decisions(prov, timeline):
+    """항상 매수 신호에서 실제 체결과 포지션 상한 거절을 모두 기록한다."""
+    lo, hi = timeline[299], timeline[349]
+    rep = Backtester(prov, _cfg(), strategies=[_AlwaysBuy()],
+                     ensemble_threshold=0.45, history_bars=700,
+                     trade_window=(lo, hi)).run()
+    f = rep.entry_funnel
+
+    assert f["strategy_evaluations"] > 0
+    assert f["buy_signals"] > 0
+    assert f["entries_filled"] > 0
+    assert f["risk_rejections"].get("max-positions", 0) > 0
+    assert f["buy_signals"] == (f["pending_attempts"]
+                                + f["unprocessed_at_window_end"])
+    assert f["pending_attempts"] == (
+        f["entries_filled"] + sum(f["risk_rejections"].values())
+        + f["no_next_bar"] + f["cooldown_blocked_at_fill"]
+        + f["broker_errors"])
+
+
 def test_window_end_closes_symbols_absent_on_the_final_date():
     """마지막 글로벌 날짜에 봉이 없는 종목도 마지막 관측 종가로 청산된다.
 
@@ -289,9 +309,14 @@ def test_runner_produces_a_serialisable_report_end_to_end():
     assert f["fold"]["oos"] == [1291, 1540]
     for seg in ("train_reference", "validation_reference", "oos_scored"):
         assert "cost" in f[seg] and "gross_profit" in f[seg]
+        assert "diagnostics" in f[seg]
+        assert f[seg]["diagnostics"]["n_trades"] == f[seg]["n_trades"]
+        assert "entry_funnel" in f[seg]
 
     assert "passed" in rep["verdict"] and rep["verdict"]["checks"]
     assert "탐색 검증" in rep["caveat"]
+    assert rep["combined_oos"]["diagnostics"]["n_trades"] == \
+        rep["combined_oos"]["n_trades"]
     json.dumps(rep, ensure_ascii=False)               # 직렬화 가능해야 한다
 
 
@@ -305,6 +330,18 @@ def test_runner_scores_oos_only():
     assert rep["combined_oos"]["n_trades"] == sum(o["n_trades"] for o in oos)
     assert rep["combined_oos"]["gross_profit"] == pytest.approx(
         sum(o["gross_profit"] for o in oos), abs=0.01)
+    d = rep["combined_oos"]["diagnostics"]
+    assert d["n_trades"] == sum(o["diagnostics"]["n_trades"] for o in oos)
+    assert d["net_profit"] == pytest.approx(
+        sum(o["diagnostics"]["net_profit"] for o in oos), abs=0.05)
+    assert sum(v["n_trades"] for v in d["by_exit_reason"].values()) == d["n_trades"]
+    funnel = rep["combined_oos"]["entry_funnel"]
+    assert funnel["buy_signals"] == (funnel["pending_attempts"]
+                                      + funnel["unprocessed_at_window_end"])
+    rejected = sum(funnel["risk_rejections"].values())
+    assert funnel["pending_attempts"] == (
+        funnel["entries_filled"] + rejected + funnel["no_next_bar"]
+        + funnel["cooldown_blocked_at_fill"] + funnel["broker_errors"])
     # fold 가 1개뿐이면 집중도는 정의상 1.0 이거나(이익 있음) 1.0(이익 0) 이다.
     assert rep["combined_oos"]["profit_concentration"] == pytest.approx(1.0)
 

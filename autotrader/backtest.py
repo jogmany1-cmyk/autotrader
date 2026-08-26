@@ -42,6 +42,7 @@ class BacktestReport:
     accuracy: Optional[object] = None      # tracker.AccuracyReport
     skipped_days: int = 0                  # 휴장일 등으로 건너뛴 봉 수
     cost_audit: Optional[CostAudit] = None
+    entry_funnel: Dict[str, object] = field(default_factory=dict)
 
 
 class Backtester:
@@ -135,6 +136,15 @@ class Backtester:
         indicator_cache: Dict[str, Dict] = {}
         # (symbol, stop, target, tag, score, votes, detail)
         pending: List[Tuple[str, float, float, str, float, int, Dict[str, float]]] = []
+        # 매수 신호가 실제 체결까지 어디서 줄었는지. 성과에는 관여하지 않는
+        # 감사 계수이며, 신호 문제와 계좌 제약 문제를 구분하기 위해 남긴다.
+        entry_funnel = {
+            "strategy_evaluations": 0, "buy_signals": 0,
+            "pending_attempts": 0, "entries_filled": 0,
+            "no_next_bar": 0, "cooldown_blocked_at_fill": 0,
+            "broker_errors": 0, "skipped_already_held": 0,
+            "skipped_cooldown_before_signal": 0, "risk_rejections": {},
+        }
 
         first_seen_close: Dict[str, float] = {}
         skipped_days = 0
@@ -171,10 +181,13 @@ class Backtester:
 
             # 2.1 대기 주문 체결(전일 신호 → 오늘 시가)
             for sym, stop, target, tag, score, votes, detail in pending:
+                entry_funnel["pending_attempts"] += 1
                 bar = todays_bars.get(sym)
                 if bar is None:
+                    entry_funnel["no_next_bar"] += 1
                     continue
                 if cooldown.is_blocked(sym, ts.date()):
+                    entry_funnel["cooldown_blocked_at_fill"] += 1
                     continue
                 price = bar.open
                 positions = broker.positions()
@@ -196,6 +209,10 @@ class Backtester:
                     position_prices={s: b.close for s, b in todays_bars.items()},
                 )
                 if not decision.allowed:
+                    reason = (decision.reason.split()[0]
+                              if decision.reason else "unknown")
+                    rejects = entry_funnel["risk_rejections"]
+                    rejects[reason] = rejects.get(reason, 0) + 1
                     continue
                 try:
                     broker.submit(
@@ -204,6 +221,7 @@ class Backtester:
                         trail=self._trail_for(sym_bars, sym_idx - 1, price),
                     )
                     risk.register_entry()
+                    entry_funnel["entries_filled"] += 1
                     tracker.record_entry(Prediction(
                         symbol=sym, entry_ts=ts, entry_price=price,
                         confidence=score, votes=votes,
@@ -211,6 +229,7 @@ class Backtester:
                         reason=tag, factor_detail=dict(detail),
                     ))
                 except Exception:
+                    entry_funnel["broker_errors"] += 1
                     continue
             pending.clear()
 
@@ -239,18 +258,22 @@ class Backtester:
             risk.new_day(ts.date(), equity_now)
             for sym, bar in todays_bars.items():
                 if sym in positions_now:
+                    entry_funnel["skipped_already_held"] += 1
                     continue
                 if cooldown.is_blocked(sym, ts.date()):
+                    entry_funnel["skipped_cooldown_before_signal"] += 1
                     continue
                 bars = bars_by_symbol[sym]
                 idx = _index_at(bars, ts)
                 if idx is None:
                     continue
+                entry_funnel["strategy_evaluations"] += 1
                 dec = self.ensemble.evaluate(
                     StrategyContext(sym, bars, idx,
                                     cache=indicator_cache.setdefault(sym, {})))
                 if dec.signal.side is not Side.BUY:
                     continue
+                entry_funnel["buy_signals"] += 1
                 pending.append((
                     sym, dec.stop_hint, dec.target_hint,
                     dec.signal.reason[:40], dec.score, dec.votes, dec.detail,
@@ -269,6 +292,9 @@ class Backtester:
             # 남는데, 리포트에는 청산된 것처럼 보여 손실이 사라진다.
             latest_price.update(prices)
             last_ts = ts
+
+        # 마지막 날 종가 신호는 다음 봉이 창 밖이라 주문 시도 대상이 아니다.
+        entry_funnel["unprocessed_at_window_end"] = len(pending)
 
         # 2.5 창 끝 강제 청산. 미청산 포지션을 남기면 결과가 나쁜 거래가
         #     채점을 빠져나가 손실이 창 밖에 숨는다.
@@ -318,7 +344,7 @@ class Backtester:
             trades=list(broker.portfolio.closed_trades),
             equity_curve=equity_points, screen_snapshot=screen,
             accuracy=tracker.report(), skipped_days=skipped_days,
-            cost_audit=cost,
+            cost_audit=cost, entry_funnel=entry_funnel,
         )
 
 
