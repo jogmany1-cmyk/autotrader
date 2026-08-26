@@ -13,11 +13,45 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class Costs:
-    """실제 체결에 가까운 비용 모델. 백테스트가 현실을 과대평가하지 않게 하는 핵심."""
+    """실제 체결에 가까운 비용 모델. 백테스트가 현실을 과대평가하지 않게 하는 핵심.
+
+    **이 dataclass 는 저장소에서 가장 파급력이 큰 몇 줄이다.** 여기가 틀리면
+    이후 어떤 전략을 시험하든 채점판이 거짓말을 한다. 실제로 두 곳이 틀려
+    있었다:
+
+    1. `tax_sell_bp = 18.0` — 2026-01-01 부터 코스피·코스닥 **모두 0.20%**
+       (코스피 = 증권거래세 0.05% + 농어촌특별세 0.15%, 코스닥 = 0.20%).
+    2. `slippage_bp = 5.0` 고정 — 백테스터는 **다음 봉 시가에 체결**하므로
+       시장가 주문이고, 시장가는 스프레드를 넘어가야 한다. KRX 틱 하나가
+       가격의 5~25bp 라 편도 5bp 는 "항상 중간가 체결"을 모델링한 값이며
+       도달 불가능하다.
+
+    측정된 결과: 어떤 전략의 거래당 순수 우위(비용 전)가 +8.0bp 였는데
+    필요한 왕복비용은 33bp(정정 후) ~ 103bp(코스닥 중소형 시장가) 였다.
+    """
     commission_bp: float = 1.5      # 왕복 아닌 편도 수수료 (bp = 0.01%)
-    tax_sell_bp: float = 18.0       # 매도 시 증권거래세+농특세 근사 (KOSPI 기준)
-    slippage_bp: float = 5.0        # 유동성/체결 지연을 감안한 편도 슬리피지
+    # 2026-01-01 시행. 코스피 0.05%+농특세 0.15%, 코스닥 0.20% — 둘 다 20bp.
+    tax_sell_bp: float = 20.0
+    # tick 모드에서는 **하한**으로만 쓰인다. fixed 모드에서는 이 값 자체가
+    # 편도 슬리피지가 된다 (구버전 재현·회귀 비교용).
+    slippage_bp: float = 5.0
+    # 시장가 주문이 넘어가는 호가 틱 수(편도). 1.0 = 한 틱을 온전히 넘긴다.
+    # 유동성 좋은 대형주는 이보다 낮을 수 있고, 호가가 2~5틱 벌어지는 코스닥
+    # 중소형주는 이보다 높다. 유니버스가 넓으면 보수적으로 올려 잡아야 한다.
+    slippage_ticks: float = 1.0
+    slippage_mode: str = "tick"     # "tick" | "fixed"
     borrow_bp_annual: float = 0.0   # 신용/대주 이자 (기본 0)
+
+    def slippage_bp_at(self, price: float) -> float:
+        """이 가격에서의 편도 슬리피지(bp).
+
+        tick 모드에서 `slippage_bp` 는 하한이다 — 호가단위가 아주 촘촘한
+        고가 대형주라도 체결 지연·부분체결 비용이 0 은 아니기 때문이다.
+        """
+        if self.slippage_mode == "fixed" or price <= 0:
+            return self.slippage_bp
+        from .market import krx_tick_bp
+        return max(self.slippage_bp, krx_tick_bp(price) * self.slippage_ticks)
 
 
 @dataclass

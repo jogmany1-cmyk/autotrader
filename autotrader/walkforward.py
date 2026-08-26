@@ -52,6 +52,16 @@ MIN_TOTAL_TRADES = 100
 MIN_TRADES_PER_FOLD = 20
 MIN_FOLDS_WITH_PF_ABOVE_ONE = 3      # 4개 중
 MAX_PROFIT_CONCENTRATION = 0.50      # 한 fold 가 전체 gross profit 의 이 비율 초과 시 실패
+
+# 회전율 상한. Novy-Marx & Velikov (RFS 29(1), 2016) 의 실측 규칙:
+# **월 편도 회전율 50% 미만인 아노말리만 비용 차감 후 유의한 순수익**을 낸다.
+#
+#   월 편도 50% → 연 편도 600% → 연 양방향 1,200% → turnover_ratio 12.0
+#   (turnover_ratio = 총매매대금 / 초기자본. 자본 100% 를 한 번 왕복하면 2.0)
+#
+# 이 선을 넘는 전략은 비용이 우위를 잡아먹는 쪽에 있다. 실제로 폐기한 5안의
+# 회전율은 12.1~54.4 였다 — 전부 이 선 위이거나 걸쳐 있었다.
+MAX_ANNUAL_TURNOVER = 12.0
 EXPLORATORY_REFERENCE_ROUND = 4
 OOS_RESULT_EXPOSURES_AFTER_FACTOR_DIAGNOSTIC = 5
 FINAL_DECISION_SOURCE = "future-data-paper-trading-min-60-trading-days"
@@ -443,8 +453,14 @@ class Verdict:
 
 
 def judge(oos_pnls_by_fold: Sequence[Sequence[float]],
-          max_drawdown: float) -> Verdict:
-    """사전 등록된 기준으로만 판정한다. 기준은 docs/WALKFORWARD-SPEC.md §5."""
+          max_drawdown: float,
+          annual_turnover: Optional[float] = None) -> Verdict:
+    """사전 등록된 기준으로만 판정한다. 기준은 docs/WALKFORWARD-SPEC.md §5.
+
+    `annual_turnover` 를 주면 회전율 게이트를 추가한다. 없으면 그 항목을
+    빼는 대신 **실패로 처리하지 않는다** — 구버전 리포트를 다시 판정할 때
+    없던 항목 때문에 결과가 뒤집히면 비교가 불가능해지기 때문이다.
+    """
     pf = combined_profit_factor(oos_pnls_by_fold)
     net = sum(sum(p) for p in oos_pnls_by_fold)
     total_trades = sum(len(p) for p in oos_pnls_by_fold)
@@ -463,7 +479,43 @@ def judge(oos_pnls_by_fold: Sequence[Sequence[float]],
          f"{n_pf_above_one}/{len(oos_pnls_by_fold)}"),
         ("집중도 ≤ 0.50", conc <= MAX_PROFIT_CONCENTRATION, f"{conc:.3f}"),
     ]
+    if annual_turnover is not None:
+        checks.append((
+            f"연 회전율 ≤ {MAX_ANNUAL_TURNOVER:.0f}배",
+            annual_turnover <= MAX_ANNUAL_TURNOVER,
+            f"{annual_turnover:.1f}배",
+        ))
     return Verdict(passed=all(ok for _, ok, _ in checks), checks=checks)
+
+
+def _overfitting_block(oos_pnls_by_fold: Sequence[Sequence[float]],
+                       n_trials: int) -> Dict[str, object]:
+    """거래별 손익을 수익률 계열로 보고 다중검정 보정을 계산한다.
+
+    거래 단위 샤프이므로 연환산하지 않는다 — 거래 빈도가 전략마다 달라서
+    같은 축에 놓으면 오히려 오해를 만든다. 보는 법은 DSR 하나면 된다:
+    0.95 미만이면 "이만큼 시도했다면 운으로 나올 수 있는 수준" 이다.
+    """
+    from .overfitting import (DSR_THRESHOLD, deflated_sharpe,
+                              expected_max_sharpe, min_backtest_length_years,
+                              sharpe_ratio)
+    flat = [p for fold in oos_pnls_by_fold for p in fold]
+    n_trials = max(1, int(n_trials))
+    dsr = deflated_sharpe(flat, n_trials) if len(flat) >= 2 else 0.0
+    return {
+        "n_trials_declared": n_trials,
+        "trade_sharpe": round(sharpe_ratio(flat), 4),
+        "expected_max_sharpe_from_luck": round(
+            expected_max_sharpe(n_trials, len(flat)), 4),
+        "deflated_sharpe": round(dsr, 4),
+        "deflated_sharpe_threshold": DSR_THRESHOLD,
+        "passes_deflated_sharpe": bool(dsr >= DSR_THRESHOLD),
+        "min_backtest_years_for_this_many_trials": round(
+            min_backtest_length_years(n_trials), 1),
+        "note": ("n_trials 는 자동으로 셀 수 없다. 지금까지 시도한 전략·점수식·"
+                 "후보선택 변형을 모두 세어 --trials 로 넣어야 의미가 있다. "
+                 "1 이면 보정하지 않은 값이다."),
+    }
 
 
 def _segment(name: str, window: Tuple[int, int], timeline, provider, config,
@@ -507,7 +559,8 @@ def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
                     min_votes: int = 1, trail: float = 0.05,
                     history_bars: int = 2500,
                     score_mode: str = "all-weights",
-                    strategy: Optional[str] = None) -> Dict[str, object]:
+                    strategy: Optional[str] = None,
+                    trials: int = 1) -> Dict[str, object]:
     """규격대로 rolling-origin 평가를 돌리고 리포트 dict 를 돌려준다.
 
     **봉 번호는 병합 시간축 기준이다.** 종목마다 상장일과 봉 수가 다르므로
@@ -578,7 +631,12 @@ def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
     oos_cost = sum(float(r.oos.cost.get("total_cost", 0.0)) for r in results)
     oos_funnel = combine_entry_funnels([r.oos.entry_funnel for r in results])
     worst_dd = min((r.oos.max_drawdown for r in results), default=0.0)
-    verdict = judge(oos_pnls, worst_dd)
+    # 각 OOS 구간이 250봉(≈1년)이므로 fold 별 turnover_ratio 의 평균이 곧
+    # 연 회전율이다. fold 마다 자본이 초기화되므로 합산이 아니라 평균이다.
+    fold_turnovers = [float(r.oos.cost.get("turnover_ratio", 0.0)) for r in results]
+    annual_turnover = (sum(fold_turnovers) / len(fold_turnovers)
+                       if fold_turnovers else None)
+    verdict = judge(oos_pnls, worst_dd, annual_turnover)
     tail = unused_tail(n_bars)
     return {
         # 이 실험이 무엇이었는지. 나중에 TRAIN 튜닝이 붙어도 섞이지 않게.
@@ -625,6 +683,11 @@ def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
         # 조용히 버리면 "전 구간을 썼다" 고 오해하게 된다.
         "excluded_tail_bars": list(tail),
         "verdict": verdict.as_dict(),
+        # 다중검정 보정. 이 fold 들은 이미 여러 번 재사용됐으므로 여기 나오는
+        # 샤프는 통계량이 아니라 순서통계량이다. n_trials 는 호출부가 정직하게
+        # 세어 넣어야 하는 값이라 자동으로 채우지 않는다 — 기본 1(=보정 없음)로
+        # 두고, 실제 시도 횟수를 넣었을 때 얼마나 깎이는지 보이게 한다.
+        "overfitting": _overfitting_block(oos_pnls, trials),
         "caveat": ("탐색 검증이다. 통과해도 승격 근거가 아니며 미사용 데이터와 "
                    "최소 60거래일 페이퍼 트레이딩이 별도로 필요하다."),
     }

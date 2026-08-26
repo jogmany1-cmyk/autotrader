@@ -43,7 +43,9 @@ class PaperBroker(Broker):
                entry_votes: int = 0,
                entry_factors: Optional[Dict[str, float]] = None) -> BrokerOrder:
         ts = ts or now_kst()
-        slip = self.costs.slippage_bp / 10_000
+        # 가격대별 호가단위를 반영한다 — 고정 bp 는 저가주의 상대 틱을
+        # 통째로 무시한다 (market.krx_tick_bp 주석 참고).
+        slip = self.costs.slippage_bp_at(price_hint) / 10_000
         if order.side is Side.BUY:
             fill_price = price_hint * (1 + slip)
         else:
@@ -140,7 +142,7 @@ class PaperBroker(Broker):
         return closed
 
     def _sell_at(self, order: Order, price: float, ts: datetime) -> Optional[Trade]:
-        slip = self.costs.slippage_bp / 10_000
+        slip = self.costs.slippage_bp_at(price) / 10_000
         fill_price = price * (1 - slip)
         gross = fill_price * order.qty
         fee = gross * (self.costs.commission_bp / 10_000)

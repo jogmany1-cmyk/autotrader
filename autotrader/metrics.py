@@ -60,7 +60,7 @@ class CostAudit:
 
 
 def build_cost_audit(fills: Sequence[Fill], initial_capital: float,
-                     slippage_bp: float) -> CostAudit:
+                     slippage_bp: float, costs=None) -> CostAudit:
     """체결 리스트에서 비용 감사 리포트 생성.
 
     `slippage_bp` 는 `Costs.slippage_bp` 를 그대로 받는다. **기본값을 두지
@@ -68,6 +68,11 @@ def build_cost_audit(fills: Sequence[Fill], initial_capital: float,
     되어 있었다. 실데이터 백테스트에서 리포트는 cost/capital 9.67% 를
     찍었지만 슬리피지를 포함한 실제는 14.29% 였다. 게이트로 쓰라고 만든
     숫자가 4.6%p 를 빠뜨리고 있었던 셈이다.
+
+    `costs` 를 주면 체결가별 호가단위를 반영해 **체결 하나하나** 슬리피지를
+    되짚는다. 주지 않으면 `slippage_bp` 단일값으로 근사한다 — 후자는 가격대별
+    상대 틱 차이를 무시하므로 저가주가 많은 유니버스에서 과소보고한다.
+    `slippage_bp` 를 계속 필수로 남겨 둔 이유는 위의 방어를 깨지 않기 위해서다.
 
     슬리피지 추정에는 근사가 하나 들어간다. `gross` 는 이미 슬리피지가 반영된
     체결가 기준이라 엄밀히는 매수 `gross×s/(1+s)`, 매도 `gross×s/(1-s)` 이지만,
@@ -80,7 +85,14 @@ def build_cost_audit(fills: Sequence[Fill], initial_capital: float,
     gross = sum(f.gross for f in fills)
     fees = sum(f.fee for f in fills)
     taxes = sum(f.tax for f in fills)
-    slip_est = gross * (slippage_bp / 10_000)
+    if costs is not None:
+        slip_est = sum(f.gross * (costs.slippage_bp_at(f.price) / 10_000)
+                       for f in fills)
+        # 리포트에 남기는 값은 실제로 적용된 **가중평균** 편도 슬리피지다.
+        # 설정값 하나만 남기면 tick 모드에서 무엇이 적용됐는지 알 수 없다.
+        slippage_bp = round(slip_est / gross * 10_000, 4) if gross > 0 else slippage_bp
+    else:
+        slip_est = gross * (slippage_bp / 10_000)
     return CostAudit(
         total_gross_volume=round(gross, 2),
         total_fees=round(fees, 2),

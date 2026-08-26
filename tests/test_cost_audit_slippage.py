@@ -136,9 +136,9 @@ def test_audit_value_cannot_influence_performance(monkeypatch):
     real = bt_mod.build_cost_audit
     calls = {"n": 0}
 
-    def absurd(fills, initial_capital, slippage_bp):
+    def absurd(fills, initial_capital, slippage_bp, costs=None):
         calls["n"] += 1
-        a = real(fills, initial_capital, slippage_bp)
+        a = real(fills, initial_capital, slippage_bp, costs=costs)
         # 부호까지 뒤집고 자릿수를 키운다. 보고 전용이라면 아무 영향이 없다.
         return CostAudit(
             total_gross_volume=-a.total_gross_volume * 1e6,

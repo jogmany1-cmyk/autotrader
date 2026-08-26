@@ -251,7 +251,8 @@ def cmd_walkforward(args) -> int:
         rep = wf.run_walkforward(
             provider, cfg, symbols=args.symbol, threshold=args.threshold,
             min_votes=args.votes, trail=args.trail, history_bars=args.bars,
-            score_mode=args.score_mode, strategy=args.strategy)
+            score_mode=args.score_mode, strategy=args.strategy,
+            trials=args.trials)
     except (RuntimeError, ValueError, NotImplementedError) as exc:
         print(f"[ERROR] {exc}")
         return 2
@@ -328,6 +329,20 @@ def cmd_walkforward(args) -> int:
     print()
     for chk in rep["verdict"]["checks"]:
         print(f"  [{'PASS' if chk['ok'] else 'FAIL'}] {chk['name']:<22} {chk['detail']}")
+
+    ov = rep.get("overfitting")
+    if ov:
+        print("\n  다중검정 보정 (Bailey & López de Prado):")
+        hint = ("  ← 보정 없음. --trials 로 실제 시도 횟수를 넣어야 의미가 있다"
+                if ov["n_trials_declared"] <= 1 else "")
+        print(f"    선언한 시도 횟수  {ov['n_trials_declared']}{hint}")
+        print(f"    거래단위 샤프     {ov['trade_sharpe']:.4f}")
+        print(f"    운으로 나올 최고  {ov['expected_max_sharpe_from_luck']:.4f}")
+        print(f"    Deflated Sharpe   {ov['deflated_sharpe']:.4f}  "
+              f"(기준 {ov['deflated_sharpe_threshold']}) "
+              f"{'PASS' if ov['passes_deflated_sharpe'] else 'FAIL'}")
+        print(f"    이 횟수에 필요한 최소 백테스트 길이  "
+              f"{ov['min_backtest_years_for_this_many_trials']}년")
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
@@ -707,6 +722,10 @@ def main(argv: Optional[list] = None) -> int:
                            "최대 보유기간이 함께 적용된다: "
                            + ", ".join(f"{k}={v}봉" for k, v in _WF_SOLO.items()))
     p_wf.add_argument("--symbol", action="append", help="종목 지정 (반복)")
+    p_wf.add_argument("--trials", type=int, default=1,
+                      help="지금까지 이 데이터에 시도한 설정 수. Deflated "
+                           "Sharpe 보정에 쓴다. 자동으로 셀 수 없으므로 "
+                           "정직하게 세어 넣어야 한다 (기본 1 = 보정 없음)")
     p_wf.add_argument("--output", help="결과 JSON 저장 경로")
     p_wf.set_defaults(func=cmd_walkforward)
 

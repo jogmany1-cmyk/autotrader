@@ -49,9 +49,39 @@ class RiskState:
 
 
 class RiskEngine:
-    def __init__(self, limits: RiskLimits):
+    """진입의 최종 관문. 전략 신호는 권고이고 여기서 거부하면 끝이다.
+
+    `blocked_symbols` 는 공시·뉴스 기반 **수비용 거부 목록**이다. 알파(수익
+    예측)가 아니라 위험 회피라는 점이 중요하다. 근거:
+
+    - 뉴스를 알파로 쓰는 것은 근거가 없다. 호재는 1분 내 완전 반영되고
+      (Busse & Green, JFE 2002), 묵은 뉴스에 반응하는 매매는 개인 과잉반응
+      패턴으로 그 다음 주에 되돌아온다 (Tetlock, RFS 2011) — 개인 거래 비중이
+      높은 종목일수록 반전이 크다.
+    - 반면 수비로는 근거가 기계적이다. **거래정지된 종목은 어떤 가격에도 팔 수
+      없다.** 손절·트레일링·EOD 청산이 전부 무력하다 (`exits.py` 의 어떤 규칙도
+      호가가 없으면 체결되지 않는다). 사전 회피가 유일한 통제수단이다.
+    - 그리고 필터는 **거래를 만들지 않으므로 회전율 비용이 0** 이다. 왕복
+      31~103bp 장벽에 걸리지 않는 유일한 종류의 개선이다.
+
+    그래서 이 목록은 감성 점수가 아니라 **열거된 하드 이벤트**로만 채워야
+    한다. 넓히면 안 되는 이유: 한국에서 제3자배정 유상증자는 CAR +7.14% 로
+    오히려 호재로 읽힌다 — "유상증자 = 악재" 같은 단순 규칙은 틀린다.
+    """
+
+    def __init__(self, limits: RiskLimits,
+                 blocked_symbols: Optional[Dict[str, str]] = None):
         self.limits = limits
         self.state = RiskState()
+        #: {종목코드: 사유}. 사유는 리포트에 그대로 실린다.
+        self.blocked_symbols: Dict[str, str] = dict(blocked_symbols or {})
+
+    def block(self, symbol: str, reason: str) -> None:
+        """이 종목의 신규 진입을 금지한다. 보유분 청산은 막지 않는다."""
+        self.blocked_symbols[symbol] = reason
+
+    def unblock(self, symbol: str) -> None:
+        self.blocked_symbols.pop(symbol, None)
 
     def new_day(self, today: date, equity: float) -> None:
         self.state.roll_day(today, equity)
@@ -87,6 +117,10 @@ class RiskEngine:
             return RiskDecision(False, 0, "price<=0")
         if symbol in positions:
             return RiskDecision(False, 0, "already-held")
+        # 공시·뉴스 수비 필터. 계좌 레벨 게이트보다 **앞**에 둔다 — 거래정지
+        # 종목은 자리가 있든 없든, 쿨다운이든 아니든 사면 안 되기 때문이다.
+        if symbol in self.blocked_symbols:
+            return RiskDecision(False, 0, f"news-block {self.blocked_symbols[symbol]}")
 
         # 계좌 레벨 게이트
         if self.state.cooldown_until:
