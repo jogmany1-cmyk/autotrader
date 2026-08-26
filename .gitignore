@@ -10,3 +10,4 @@ runs/
 data/
 config.yaml
 .env
+config/*.local.json
