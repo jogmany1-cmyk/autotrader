@@ -352,8 +352,8 @@ def test_runner_produces_a_serialisable_report_end_to_end():
     assert rep["excluded_tail_bars"] == [0, 0]        # 딱 맞아떨어짐
     assert rep["settings"]["threshold"] == 0.45
     assert rep["settings"]["candidate_selection"] == "score-desc-symbol-asc"
-    assert rep["settings"]["exploratory_reference_round"] == 3
-    assert rep["settings"]["oos_result_exposures_after_factor_diagnostic"] == 4
+    assert rep["settings"]["exploratory_reference_round"] == 4
+    assert rep["settings"]["oos_result_exposures_after_factor_diagnostic"] == 5
     assert rep["settings"]["final_decision_source"] == (
         "future-data-paper-trading-min-60-trading-days")
     assert rep["settings"]["costs"]["slippage_bp"] == _cfg().costs.slippage_bp
@@ -480,9 +480,22 @@ def test_short_data_is_allowed_below_the_limit_then_length_checked():
 # ---- 독립 전략 단독 실행 --------------------------------------------------
 
 def test_independent_strategy_spec_matches_the_document():
-    """규격 §6 의 표를 그대로 고정한다 — 값이 바뀌면 여기서 실패한다."""
-    assert wf.INDEPENDENT_STRATEGIES == {
-        "mean_reversion": 5, "swing_trend": 20, "day_momentum": 20}
+    """규격 §6 원본 3안의 최대 보유기간을 고정한다 — 값이 바뀌면 여기서 실패한다.
+
+    §8 에서 추가된 실험 전략(swing_trend_v2_experimental)은 여기서 다루지
+    않는다 — 원본 3안 규격과 이후 추가분을 같은 assert 로 묶으면 새 실험을
+    추가할 때마다 "규격이 바뀌었다"는 오탐이 뜬다.
+    """
+    assert wf.INDEPENDENT_STRATEGIES["mean_reversion"] == 5
+    assert wf.INDEPENDENT_STRATEGIES["swing_trend"] == 20
+    assert wf.INDEPENDENT_STRATEGIES["day_momentum"] == 20
+
+
+def test_swing_trend_v2_experimental_keeps_the_same_exit_rules():
+    """§8: 청산 규칙(최대 보유기간)은 swing_trend 와 동일해야 한다 — 바뀐
+    것은 점수 계산뿐이라는 설계 의도를 여기서 고정한다."""
+    assert (wf.INDEPENDENT_STRATEGIES["swing_trend_v2_experimental"]
+            == wf.INDEPENDENT_STRATEGIES["swing_trend"])
 
 
 def test_unknown_strategy_is_refused():
@@ -557,10 +570,13 @@ def test_solo_run_keeps_stop_target_and_trailing():
 
 def test_solo_uses_the_same_strategy_class_as_the_ensemble():
     """독립 실행이 다른 구현을 쓰면 비교가 무의미해진다."""
-    from autotrader.strategy import DayMomentum, MeanReversion, SwingTrend
+    from autotrader.strategy import (DayMomentum, MeanReversion, SwingTrend,
+                                     SwingTrendV2Experimental)
     assert isinstance(wf._build_strategy("mean_reversion"), MeanReversion)
     assert isinstance(wf._build_strategy("swing_trend"), SwingTrend)
     assert isinstance(wf._build_strategy("day_momentum"), DayMomentum)
+    assert isinstance(wf._build_strategy("swing_trend_v2_experimental"),
+                      SwingTrendV2Experimental)
 
 
 def test_walkforward_cli_has_no_cp949_incompatible_warning_symbol():

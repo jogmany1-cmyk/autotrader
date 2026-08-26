@@ -52,8 +52,8 @@ MIN_TOTAL_TRADES = 100
 MIN_TRADES_PER_FOLD = 20
 MIN_FOLDS_WITH_PF_ABOVE_ONE = 3      # 4개 중
 MAX_PROFIT_CONCENTRATION = 0.50      # 한 fold 가 전체 gross profit 의 이 비율 초과 시 실패
-EXPLORATORY_REFERENCE_ROUND = 3
-OOS_RESULT_EXPOSURES_AFTER_FACTOR_DIAGNOSTIC = 4
+EXPLORATORY_REFERENCE_ROUND = 4
+OOS_RESULT_EXPOSURES_AFTER_FACTOR_DIAGNOSTIC = 5
 FINAL_DECISION_SOURCE = "future-data-paper-trading-min-60-trading-days"
 
 # ---- 진입 조건 진단 구간 (결과를 보기 전에 고정) --------------------------
@@ -65,6 +65,14 @@ ENTRY_FACTOR_SPECS = {
     "swing_trend.fast_slow_gap": ("50/200 이동평균 간격", (0.03, 0.07, 0.15, 0.30), True),
     "swing_trend.price_fast_gap": ("종가/50 이동평균 간격", (0.03, 0.07, 0.15, 0.30), True),
     "swing_trend.atr_pct": ("ATR/종가", (0.02, 0.04, 0.06, 0.10), True),
+    # v2(실험) 는 raw_strength 가 없다 — clip 없는 1/(1+ATR%) 이라 포화 대상이
+    # 아니다. 나머지 지표는 swing_trend 와 같은 경계로 비교 가능하게 둔다.
+    "swing_trend_v2_experimental.roc_120": ("120봉 수익률(v2)", (0.15, 0.30, 0.45, 0.75), True),
+    "swing_trend_v2_experimental.fast_slow_gap": ("50/200 이동평균 간격(v2)",
+                                                    (0.03, 0.07, 0.15, 0.30), True),
+    "swing_trend_v2_experimental.price_fast_gap": ("종가/50 이동평균 간격(v2)",
+                                                     (0.03, 0.07, 0.15, 0.30), True),
+    "swing_trend_v2_experimental.atr_pct": ("ATR/종가(v2)", (0.02, 0.04, 0.06, 0.10), True),
     "execution.entry_gap_pct": ("다음 시가 갭", (-0.03, -0.01, 0.01, 0.03), True),
     "execution.initial_stop_distance_pct": ("체결가 대비 초기 손절 거리",
                                                (0.00, 0.03, 0.06, 0.10, 0.20), True),
@@ -331,9 +339,11 @@ def profit_concentration(pnls_by_fold: Sequence[Sequence[float]]) -> float:
 def _build_strategy(name: str):
     """이름으로 전략 인스턴스 하나를 만든다. 앙상블과 같은 클래스를 쓴다 —
     독립 실행이 다른 구현을 쓰면 비교가 무의미해진다."""
-    from .strategy import DayMomentum, MeanReversion, SwingTrend
+    from .strategy import (DayMomentum, MeanReversion, SwingTrend,
+                           SwingTrendV2Experimental)
     return {"mean_reversion": MeanReversion, "swing_trend": SwingTrend,
-            "day_momentum": DayMomentum}[name]()
+            "day_momentum": DayMomentum,
+            "swing_trend_v2_experimental": SwingTrendV2Experimental}[name]()
 
 
 # ---- 러너 ------------------------------------------------------------------
@@ -356,10 +366,15 @@ SCORE_MODES = ("all-weights", "active-voters")
 # 없이 정확히 N봉 종가에만 청산하면 edge 측정과는 가까워지지만 위험관리를
 # 들어낸 다른 전략이 되므로, 이 비교에는 넣지 않는다
 # (docs/WALKFORWARD-SPEC.md §6).
+#
+# swing_trend_v2_experimental (§8) 은 §6 원본 3안 비교 이후에 추가된 실험
+# 전략이다 — 청산 규칙(손절·목표가·최대 보유기간)은 swing_trend 와 동일하게
+# 두고 점수 계산만 바꾼다.
 INDEPENDENT_STRATEGIES: Dict[str, int] = {
     "mean_reversion": 5,
     "swing_trend": 20,
     "day_momentum": 20,
+    "swing_trend_v2_experimental": 20,
 }
 
 

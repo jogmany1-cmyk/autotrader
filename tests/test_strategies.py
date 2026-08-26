@@ -2,7 +2,8 @@ from datetime import datetime, timedelta
 import pytest
 from autotrader.data.synthetic import generate_bars
 from autotrader.strategy import (DayBreakout, DayPullback, DayMomentum,
-                                 SwingTrend, MeanReversion, Ensemble)
+                                 SwingTrend, SwingTrendV2Experimental,
+                                 MeanReversion, Ensemble)
 from autotrader.strategy.base import StrategyContext
 from autotrader.strategy.base import Strategy, StrategyResult
 from autotrader.config import StrategyWeights
@@ -23,7 +24,8 @@ class _Fixed(Strategy):
 
 def test_all_strategies_return_valid_signal():
     bars = generate_bars("TST", n=500, seed=1)
-    for cls in (DayBreakout, DayPullback, DayMomentum, SwingTrend, MeanReversion):
+    for cls in (DayBreakout, DayPullback, DayMomentum, SwingTrend,
+               SwingTrendV2Experimental, MeanReversion):
         s = cls()
         result = s.evaluate(StrategyContext("TST", bars, len(bars) - 1))
         assert result.signal.side.value in {"BUY", "HOLD"}
@@ -111,3 +113,47 @@ def test_swing_preserves_raw_factors_when_public_score_is_clipped():
     assert decision.factors["swing_trend.raw_strength"] > 0.95
     assert decision.factors["swing_trend.roc_120"] == pytest.approx(
         result.factors["roc_120"])
+
+
+def test_swing_v2_scores_by_volatility_alone():
+    """§8: 점수는 ATR/종가 하나로만 정해진다 — clip 도, 포화도 없다."""
+    bars = []
+    for i in range(260):
+        close = 100.0 * (1.004 ** i)
+        bars.append(Bar(datetime(2024, 1, 1) + timedelta(days=i),
+                        close, close * 1.05, close * 0.95, close, 1_000_000))
+    ctx = StrategyContext("TST", bars, len(bars) - 1)
+    result = SwingTrendV2Experimental().evaluate(ctx)
+
+    assert result.signal.side is Side.BUY
+    atr_pct = result.factors["atr_pct"]
+    assert atr_pct > 0
+    assert result.signal.strength == pytest.approx(1.0 / (1.0 + atr_pct))
+    # 원본과 달리 clip 전/후 값이 갈리지 않는다 — 애초에 clip 이 없다.
+    assert "raw_strength" not in result.factors
+
+
+def test_swing_v2_prefers_lower_volatility_over_higher_momentum():
+    """§8 처방의 핵심: 모멘텀(120봉 수익률)이 더 커도 변동성이 크면 점수가
+    낮다 — swing_trend 는 반대로 모멘텀이 클수록 점수를 더 줬다."""
+    def make_bars(growth, spread_pct):
+        bars = []
+        for i in range(260):
+            close = 100.0 * (growth ** i)
+            bars.append(Bar(datetime(2024, 1, 1) + timedelta(days=i),
+                            close, close * (1 + spread_pct),
+                            close * (1 - spread_pct), close, 1_000_000))
+        return bars
+
+    low_vol_low_momentum = make_bars(1.003, 0.01)
+    high_vol_high_momentum = make_bars(1.006, 0.08)
+
+    r_low = SwingTrendV2Experimental().evaluate(
+        StrategyContext("TST", low_vol_low_momentum, 259))
+    r_high = SwingTrendV2Experimental().evaluate(
+        StrategyContext("TST", high_vol_high_momentum, 259))
+
+    assert r_low.signal.side is Side.BUY
+    assert r_high.signal.side is Side.BUY
+    assert r_high.factors["roc_120"] > r_low.factors["roc_120"]
+    assert r_low.signal.strength > r_high.signal.strength

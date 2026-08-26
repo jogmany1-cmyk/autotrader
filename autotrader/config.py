@@ -83,6 +83,10 @@ class StrategyWeights:
     day_momentum: float = 0.75
     swing_trend: float = 1.25
     mean_reversion: float = 0.75
+    # 5개 앙상블 전략에는 넣지 않는다(backtest._default_strategies 미포함).
+    # walkforward --strategy 단독 실행에서만 쓰이며, Ensemble 이
+    # getattr(weights, strat.name) 으로 가중치를 찾으므로 필드는 있어야 한다.
+    swing_trend_v2_experimental: float = 1.25
 
 
 @dataclass
