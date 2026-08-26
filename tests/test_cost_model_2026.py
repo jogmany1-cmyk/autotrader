@@ -139,3 +139,33 @@ def test_slippage_bp_still_required():
     """빠뜨리면 조용히 과소보고되던 버그 — 방어를 깨지 않았는지 확인."""
     with pytest.raises(TypeError):
         build_cost_audit([], 100_000)      # type: ignore[call-arg]
+
+
+# ---- 구·신 모델 A/B (재측정용) ---------------------------------------------
+
+def test_legacy_preset_reproduces_the_pre_correction_model():
+    """비교하려면 옛 모델을 정확히 재현할 수 있어야 한다."""
+    old = Costs.legacy_2025()
+    assert old.tax_sell_bp == 18.0
+    assert old.slippage_mode == "fixed"
+    assert old.slippage_bp_at(2_000) == 5.0      # 가격대와 무관하게 고정
+
+
+def test_legacy_is_cheaper_than_current_everywhere():
+    """정정의 방향을 고정한다 — 새 모델이 더 싸지는 가격대가 있으면 버그다."""
+    old, new = Costs.legacy_2025(), Costs()
+    for price in (1_000, 2_000, 4_900, 12_000, 49_000, 80_000, 190_000, 600_000):
+        def rt(c):
+            return (2 * c.commission_bp + c.tax_sell_bp
+                    + 2 * c.slippage_bp_at(price))
+        assert rt(new) > rt(old), f"{price}원에서 신모델이 더 싸다"
+
+
+def test_cli_cost_model_flag_switches_the_preset():
+    from autotrader.cli import _config
+    from autotrader.data.synthetic import SyntheticProvider
+    prov = SyntheticProvider(n=60)
+    assert _config(None, prov, "current").costs.tax_sell_bp == 20.0
+    assert _config(None, prov, "legacy").costs.tax_sell_bp == 18.0
+    with pytest.raises(ValueError, match="cost-model"):
+        _config(None, prov, "oops")

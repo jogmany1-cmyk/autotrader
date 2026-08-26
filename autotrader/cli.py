@@ -16,7 +16,7 @@ from typing import Optional
 
 from .backtest import Backtester
 from .broker import PaperBroker
-from .config import Config
+from .config import Config, Costs
 from .data import CsvProvider, SyntheticProvider
 from .data.base import DataProvider
 from .live import LiveTrader
@@ -33,10 +33,16 @@ def _provider(csv_dir: Optional[str]) -> DataProvider:
     return SyntheticProvider()
 
 
-def _config(path: Optional[str], provider: DataProvider) -> Config:
+def _config(path: Optional[str], provider: DataProvider,
+            cost_model: str = "current") -> Config:
     cfg = Config.load(path) if path else Config.default()
     if not cfg.universe.symbols:
         cfg.universe.symbols = provider.universe()
+    if cost_model == "legacy":
+        # 정정 전 모델로 되돌린다. 같은 실행을 두 번 돌려 비교할 때만 쓴다.
+        cfg.costs = Costs.legacy_2025()
+    elif cost_model != "current":
+        raise ValueError(f"cost-model 은 current|legacy 중 하나여야 합니다: {cost_model}")
     return cfg
 
 
@@ -246,7 +252,8 @@ def cmd_walkforward(args) -> int:
     from . import walkforward as wf
 
     provider = _provider(args.csv)
-    cfg = _config(args.config, provider)
+    cfg = _config(args.config, provider,
+                  getattr(args, "cost_model", "current"))
     try:
         rep = wf.run_walkforward(
             provider, cfg, symbols=args.symbol, threshold=args.threshold,
@@ -261,6 +268,12 @@ def cmd_walkforward(args) -> int:
     print(f"== 구간별 안정성 평가 ({rep['evaluation']}) ==")
     print(f"  fit_mode={rep['fit_mode']}  score_mode={rep['score_mode']}  "
           f"임계={s['threshold']}  min_votes={s['min_votes']}")
+    _c = s["costs"]
+    _slip = (f"틱×{_c['slippage_ticks']:g}(하한 {_c['slippage_bp']:g}bp)"
+             if _c["slippage_mode"] == "tick" else f"고정 {_c['slippage_bp']:g}bp")
+    _legacy = "  ← 정정 전 모델. 낙관 편향" if _c["slippage_mode"] == "fixed" else ""
+    print(f"  비용: 세금 {_c['tax_sell_bp']:g}bp · 수수료 {_c['commission_bp']:g}bp · "
+          f"슬리피지 {_slip}{_legacy}")
     print(f"  [탐색] 동일 OOS 참조 {s['exploratory_reference_round']}회차 · "
           "최종 판정은 이후 새 데이터 60거래일 모의투자에서만 수행")
     if rep["strategy"]:
@@ -722,6 +735,11 @@ def main(argv: Optional[list] = None) -> int:
                            "최대 보유기간이 함께 적용된다: "
                            + ", ".join(f"{k}={v}봉" for k, v in _WF_SOLO.items()))
     p_wf.add_argument("--symbol", action="append", help="종목 지정 (반복)")
+    p_wf.add_argument("--cost-model", default="current",
+                      choices=["current", "legacy"],
+                      help="current = 2026 세율 20bp + 틱 기반 슬리피지(기본). "
+                           "legacy = 정정 전 18bp + 고정 5bp. 두 번 돌려 "
+                           "비교할 때만 legacy 를 쓴다 — 그 숫자는 낙관 편향이다")
     p_wf.add_argument("--trials", type=int, default=1,
                       help="지금까지 이 데이터에 시도한 설정 수. Deflated "
                            "Sharpe 보정에 쓴다. 자동으로 셀 수 없으므로 "

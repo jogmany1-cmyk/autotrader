@@ -42,6 +42,21 @@ class Costs:
     slippage_mode: str = "tick"     # "tick" | "fixed"
     borrow_bp_annual: float = 0.0   # 신용/대주 이자 (기본 0)
 
+    @classmethod
+    def legacy_2025(cls) -> "Costs":
+        """2026-08-26 정정 **이전**의 비용 모델. 재현·비교 전용.
+
+        새 모델이 결과를 얼마나 바꾸는지 재려면 같은 실행을 두 번 돌려
+        비교해야 하는데, 그때마다 설정을 손으로 고치면 비교 자체를 믿기
+        어렵다. 옛 값을 코드에 고정해 둔다.
+
+        **이 설정으로 나온 숫자는 낙관 편향이다.** 세율이 2bp 낮고,
+        슬리피지가 가격대와 무관하게 편도 5bp 로 고정돼 있어 시장가 주문이
+        스프레드를 넘는 비용을 반영하지 못한다.
+        """
+        return cls(commission_bp=1.5, tax_sell_bp=18.0,
+                   slippage_bp=5.0, slippage_mode="fixed")
+
     def slippage_bp_at(self, price: float) -> float:
         """이 가격에서의 편도 슬리피지(bp).
 

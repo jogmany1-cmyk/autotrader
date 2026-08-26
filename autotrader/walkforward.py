@@ -662,9 +662,14 @@ def run_walkforward(provider, config, *, symbols=None, threshold: float = 0.45,
                      "oos_result_exposures_after_factor_diagnostic":
                          OOS_RESULT_EXPOSURES_AFTER_FACTOR_DIAGNOSTIC,
                      "final_decision_source": FINAL_DECISION_SOURCE,
+                     # 비용 모델 전체를 남긴다. slippage_bp 만 남기면 tick
+                     # 모드에서 실제로 얼마가 적용됐는지 알 수 없고, 두 실행이
+                     # 같은 조건이었는지 나중에 확인할 수 없다.
                      "costs": {"commission_bp": config.costs.commission_bp,
                                "tax_sell_bp": config.costs.tax_sell_bp,
-                               "slippage_bp": config.costs.slippage_bp}},
+                               "slippage_bp": config.costs.slippage_bp,
+                               "slippage_mode": config.costs.slippage_mode,
+                               "slippage_ticks": config.costs.slippage_ticks}},
         "spec": {"train_min_bars": TRAIN_MIN_BARS,
                  "validation_bars": VALIDATION_BARS, "oos_bars": OOS_BARS,
                  "step_bars": STEP_BARS, "purge_bars": PURGE_BARS},
