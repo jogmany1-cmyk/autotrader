@@ -1,0 +1,547 @@
+{
+  "fit_mode": "none",
+  "evaluation": "expanding rolling-origin (walk-forward optimization 아님)",
+  "score_mode": "active-voters",
+  "strategy": null,
+  "max_holding_bars": 20,
+  "settings": {
+    "threshold": 0.45,
+    "min_votes": 1,
+    "trail": 0.05,
+    "history_bars": 2500,
+    "n_symbols": 4298,
+    "n_bars_timeline": 2500,
+    "timeline_start": "2016-06-16",
+    "timeline_end": "2026-08-25",
+    "merged_union_bars": 2501,
+    "trimmed_leading_bars": 1,
+    "costs": {
+      "commission_bp": 1.5,
+      "tax_sell_bp": 18.0,
+      "slippage_bp": 5.0
+    }
+  },
+  "spec": {
+    "train_min_bars": 1000,
+    "validation_bars": 250,
+    "oos_bars": 250,
+    "step_bars": 250,
+    "purge_bars": 20
+  },
+  "folds": [
+    {
+      "fold": {
+        "index": 1,
+        "train": [
+          1,
+          1000
+        ],
+        "purge_after_train": [
+          1001,
+          1020
+        ],
+        "validation": [
+          1021,
+          1270
+        ],
+        "purge_after_validation": [
+          1271,
+          1290
+        ],
+        "oos": [
+          1291,
+          1540
+        ]
+      },
+      "train_reference": {
+        "name": "train",
+        "window": [
+          1,
+          1000
+        ],
+        "start": "2016-06-16",
+        "end": "2020-07-10",
+        "n_trades": 471,
+        "gross_profit": 10963725.01,
+        "gross_loss": 13355610.67,
+        "net_return": -0.2392,
+        "profit_factor": 0.821,
+        "max_drawdown": -0.327,
+        "cost": {
+          "total_gross_volume": 894654687.67,
+          "total_fees": 134198.2,
+          "total_taxes": 803880.79,
+          "total_slippage_est": 447327.34,
+          "cost_to_capital_ratio": 0.138541,
+          "turnover_ratio": 89.465,
+          "avg_trade_size": 949739.58,
+          "n_fills": 942,
+          "slippage_bp": 5.0,
+          "total_cost": 1385406.33
+        },
+        "window_end_trades": 4,
+        "window_end_pnl": -19831.69,
+        "unclosed_exposure": 0.0
+      },
+      "validation_reference": {
+        "name": "validation",
+        "window": [
+          1021,
+          1270
+        ],
+        "start": "2020-08-10",
+        "end": "2021-08-11",
+        "n_trades": 102,
+        "gross_profit": 4153466.19,
+        "gross_loss": 2409077.92,
+        "net_return": 0.1744,
+        "profit_factor": 1.724,
+        "max_drawdown": -0.0507,
+        "cost": {
+          "total_gross_volume": 164149913.48,
+          "total_fees": 24622.49,
+          "total_taxes": 149461.55,
+          "total_slippage_est": 82074.96,
+          "cost_to_capital_ratio": 0.025616,
+          "turnover_ratio": 16.415,
+          "avg_trade_size": 804656.44,
+          "n_fills": 204,
+          "slippage_bp": 5.0,
+          "total_cost": 256159.0
+        },
+        "window_end_trades": 5,
+        "window_end_pnl": -104040.06,
+        "unclosed_exposure": 0.0
+      },
+      "oos_scored": {
+        "name": "oos",
+        "window": [
+          1291,
+          1540
+        ],
+        "start": "2021-09-10",
+        "end": "2022-09-19",
+        "n_trades": 116,
+        "gross_profit": 3240881.17,
+        "gross_loss": 4284719.62,
+        "net_return": -0.1044,
+        "profit_factor": 0.756,
+        "max_drawdown": -0.1487,
+        "cost": {
+          "total_gross_volume": 226367707.99,
+          "total_fees": 33955.16,
+          "total_taxes": 203004.75,
+          "total_slippage_est": 113183.85,
+          "cost_to_capital_ratio": 0.035014,
+          "turnover_ratio": 22.637,
+          "avg_trade_size": 975722.88,
+          "n_fills": 232,
+          "slippage_bp": 5.0,
+          "total_cost": 350143.76
+        },
+        "window_end_trades": 3,
+        "window_end_pnl": 68334.27,
+        "unclosed_exposure": 0.0
+      }
+    },
+    {
+      "fold": {
+        "index": 2,
+        "train": [
+          1,
+          1250
+        ],
+        "purge_after_train": [
+          1251,
+          1270
+        ],
+        "validation": [
+          1271,
+          1520
+        ],
+        "purge_after_validation": [
+          1521,
+          1540
+        ],
+        "oos": [
+          1541,
+          1790
+        ]
+      },
+      "train_reference": {
+        "name": "train",
+        "window": [
+          1,
+          1250
+        ],
+        "start": "2016-06-16",
+        "end": "2021-07-14",
+        "n_trades": 575,
+        "gross_profit": 14120213.35,
+        "gross_loss": 15279741.91,
+        "net_return": -0.116,
+        "profit_factor": 0.924,
+        "max_drawdown": -0.327,
+        "cost": {
+          "total_gross_volume": 1011609732.75,
+          "total_fees": 151741.46,
+          "total_taxes": 910361.08,
+          "total_slippage_est": 505804.87,
+          "cost_to_capital_ratio": 0.156791,
+          "turnover_ratio": 101.161,
+          "avg_trade_size": 879660.64,
+          "n_fills": 1150,
+          "slippage_bp": 5.0,
+          "total_cost": 1567907.41
+        },
+        "window_end_trades": 5,
+        "window_end_pnl": 79966.3,
+        "unclosed_exposure": 0.0
+      },
+      "validation_reference": {
+        "name": "validation",
+        "window": [
+          1271,
+          1520
+        ],
+        "start": "2021-08-12",
+        "end": "2022-08-18",
+        "n_trades": 122,
+        "gross_profit": 3186231.91,
+        "gross_loss": 4447487.45,
+        "net_return": -0.1261,
+        "profit_factor": 0.716,
+        "max_drawdown": -0.1382,
+        "cost": {
+          "total_gross_volume": 240640350.83,
+          "total_fees": 36096.05,
+          "total_taxes": 215667.77,
+          "total_slippage_est": 120320.18,
+          "cost_to_capital_ratio": 0.037208,
+          "turnover_ratio": 24.064,
+          "avg_trade_size": 986230.95,
+          "n_fills": 244,
+          "slippage_bp": 5.0,
+          "total_cost": 372084.0
+        },
+        "window_end_trades": 5,
+        "window_end_pnl": 60854.63,
+        "unclosed_exposure": 0.0
+      },
+      "oos_scored": {
+        "name": "oos",
+        "window": [
+          1541,
+          1790
+        ],
+        "start": "2022-09-20",
+        "end": "2023-09-19",
+        "n_trades": 124,
+        "gross_profit": 2590434.44,
+        "gross_loss": 4391626.56,
+        "net_return": -0.1801,
+        "profit_factor": 0.59,
+        "max_drawdown": -0.2057,
+        "cost": {
+          "total_gross_volume": 247449561.38,
+          "total_fees": 37117.43,
+          "total_taxes": 221316.12,
+          "total_slippage_est": 123724.78,
+          "cost_to_capital_ratio": 0.038216,
+          "turnover_ratio": 24.745,
+          "avg_trade_size": 997780.49,
+          "n_fills": 248,
+          "slippage_bp": 5.0,
+          "total_cost": 382158.33
+        },
+        "window_end_trades": 3,
+        "window_end_pnl": 121198.14,
+        "unclosed_exposure": 0.0
+      }
+    },
+    {
+      "fold": {
+        "index": 3,
+        "train": [
+          1,
+          1500
+        ],
+        "purge_after_train": [
+          1501,
+          1520
+        ],
+        "validation": [
+          1521,
+          1770
+        ],
+        "purge_after_validation": [
+          1771,
+          1790
+        ],
+        "oos": [
+          1791,
+          2040
+        ]
+      },
+      "train_reference": {
+        "name": "train",
+        "window": [
+          1,
+          1500
+        ],
+        "start": "2016-06-16",
+        "end": "2022-07-20",
+        "n_trades": 697,
+        "gross_profit": 17215779.56,
+        "gross_loss": 19296941.46,
+        "net_return": -0.2081,
+        "profit_factor": 0.892,
+        "max_drawdown": -0.327,
+        "cost": {
+          "total_gross_volume": 1231328361.58,
+          "total_fees": 184699.25,
+          "total_taxes": 1107485.45,
+          "total_slippage_est": 615664.18,
+          "cost_to_capital_ratio": 0.190785,
+          "turnover_ratio": 123.133,
+          "avg_trade_size": 883305.85,
+          "n_fills": 1394,
+          "slippage_bp": 5.0,
+          "total_cost": 1907848.88
+        },
+        "window_end_trades": 5,
+        "window_end_pnl": 27328.08,
+        "unclosed_exposure": 0.0
+      },
+      "validation_reference": {
+        "name": "validation",
+        "window": [
+          1521,
+          1770
+        ],
+        "start": "2022-08-19",
+        "end": "2023-08-22",
+        "n_trades": 128,
+        "gross_profit": 1927649.74,
+        "gross_loss": 4690068.37,
+        "net_return": -0.2762,
+        "profit_factor": 0.411,
+        "max_drawdown": -0.2818,
+        "cost": {
+          "total_gross_volume": 245282292.15,
+          "total_fees": 36792.34,
+          "total_taxes": 218497.65,
+          "total_slippage_est": 122641.15,
+          "cost_to_capital_ratio": 0.037793,
+          "turnover_ratio": 24.528,
+          "avg_trade_size": 958133.95,
+          "n_fills": 256,
+          "slippage_bp": 5.0,
+          "total_cost": 377931.14
+        },
+        "window_end_trades": 5,
+        "window_end_pnl": -76470.66,
+        "unclosed_exposure": 0.0
+      },
+      "oos_scored": {
+        "name": "oos",
+        "window": [
+          1791,
+          2040
+        ],
+        "start": "2023-09-20",
+        "end": "2024-10-02",
+        "n_trades": 122,
+        "gross_profit": 3273899.12,
+        "gross_loss": 3788152.32,
+        "net_return": -0.0514,
+        "profit_factor": 0.864,
+        "max_drawdown": -0.0981,
+        "cost": {
+          "total_gross_volume": 215818624.51,
+          "total_fees": 32372.79,
+          "total_taxes": 193977.65,
+          "total_slippage_est": 107909.31,
+          "cost_to_capital_ratio": 0.033426,
+          "turnover_ratio": 21.582,
+          "avg_trade_size": 884502.56,
+          "n_fills": 244,
+          "slippage_bp": 5.0,
+          "total_cost": 334259.75
+        },
+        "window_end_trades": 4,
+        "window_end_pnl": -19375.11,
+        "unclosed_exposure": 0.0
+      }
+    },
+    {
+      "fold": {
+        "index": 4,
+        "train": [
+          1,
+          1750
+        ],
+        "purge_after_train": [
+          1751,
+          1770
+        ],
+        "validation": [
+          1771,
+          2020
+        ],
+        "purge_after_validation": [
+          2021,
+          2040
+        ],
+        "oos": [
+          2041,
+          2290
+        ]
+      },
+      "train_reference": {
+        "name": "train",
+        "window": [
+          1,
+          1750
+        ],
+        "start": "2016-06-16",
+        "end": "2023-07-24",
+        "n_trades": 815,
+        "gross_profit": 19004881.75,
+        "gross_loss": 22710371.05,
+        "net_return": -0.3705,
+        "profit_factor": 0.837,
+        "max_drawdown": -0.3719,
+        "cost": {
+          "total_gross_volume": 1431308713.16,
+          "total_fees": 214696.3,
+          "total_taxes": 1286193.7,
+          "total_slippage_est": 715654.36,
+          "cost_to_capital_ratio": 0.221654,
+          "turnover_ratio": 143.131,
+          "avg_trade_size": 878103.51,
+          "n_fills": 1630,
+          "slippage_bp": 5.0,
+          "total_cost": 2216544.36
+        },
+        "window_end_trades": 3,
+        "window_end_pnl": -49499.54,
+        "unclosed_exposure": 0.0
+      },
+      "validation_reference": {
+        "name": "validation",
+        "window": [
+          1771,
+          2020
+        ],
+        "start": "2023-08-23",
+        "end": "2024-08-29",
+        "n_trades": 124,
+        "gross_profit": 3747834.16,
+        "gross_loss": 3857207.13,
+        "net_return": -0.0109,
+        "profit_factor": 0.972,
+        "max_drawdown": -0.1102,
+        "cost": {
+          "total_gross_volume": 218549061.58,
+          "total_fees": 32782.36,
+          "total_taxes": 196802.35,
+          "total_slippage_est": 109274.53,
+          "cost_to_capital_ratio": 0.033886,
+          "turnover_ratio": 21.855,
+          "avg_trade_size": 881246.22,
+          "n_fills": 248,
+          "slippage_bp": 5.0,
+          "total_cost": 338859.24
+        },
+        "window_end_trades": 5,
+        "window_end_pnl": -25110.74,
+        "unclosed_exposure": 0.0
+      },
+      "oos_scored": {
+        "name": "oos",
+        "window": [
+          2041,
+          2290
+        ],
+        "start": "2024-10-04",
+        "end": "2025-10-16",
+        "n_trades": 115,
+        "gross_profit": 4034597.48,
+        "gross_loss": 3320566.91,
+        "net_return": 0.0714,
+        "profit_factor": 1.215,
+        "max_drawdown": -0.0627,
+        "cost": {
+          "total_gross_volume": 232944314.09,
+          "total_fees": 34941.65,
+          "total_taxes": 210513.42,
+          "total_slippage_est": 116472.16,
+          "cost_to_capital_ratio": 0.036193,
+          "turnover_ratio": 23.294,
+          "avg_trade_size": 1012801.37,
+          "n_fills": 230,
+          "slippage_bp": 5.0,
+          "total_cost": 361927.23
+        },
+        "window_end_trades": 4,
+        "window_end_pnl": -88843.7,
+        "unclosed_exposure": 0.0
+      }
+    }
+  ],
+  "combined_oos": {
+    "profit_factor": 0.8324,
+    "net_profit": -2645253.19,
+    "gross_profit": 13139812.22,
+    "gross_loss": 15785065.4,
+    "n_trades": 477,
+    "worst_fold_max_drawdown": -0.2057,
+    "profit_concentration": 0.3071
+  },
+  "excluded_tail_bars": [
+    2291,
+    2500
+  ],
+  "verdict": {
+    "passed": false,
+    "checks": [
+      {
+        "name": "합산 OOS PF ≥ 1.20",
+        "ok": false,
+        "detail": "0.832"
+      },
+      {
+        "name": "합산 OOS 순수익 > 0",
+        "ok": false,
+        "detail": "-2,645,253"
+      },
+      {
+        "name": "MDD ≥ -25%",
+        "ok": true,
+        "detail": "-0.2057"
+      },
+      {
+        "name": "합산 거래 ≥ 100",
+        "ok": true,
+        "detail": "477"
+      },
+      {
+        "name": "각 fold 거래 ≥ 20",
+        "ok": true,
+        "detail": "116, 124, 122, 115"
+      },
+      {
+        "name": "PF > 1.0 인 fold ≥ 3",
+        "ok": false,
+        "detail": "1/4"
+      },
+      {
+        "name": "집중도 ≤ 0.50",
+        "ok": true,
+        "detail": "0.307"
+      }
+    ]
+  },
+  "caveat": "탐색 검증이다. 통과해도 승격 근거가 아니며 미사용 데이터와 최소 60거래일 페이퍼 트레이딩이 별도로 필요하다."
+}
