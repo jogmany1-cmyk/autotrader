@@ -31,6 +31,10 @@ log = logging.getLogger("autotrader.jobs")
 #: 데이터로만 한다 — 최소 60거래일 모의투자" 를 코드로 옮긴 것.
 TARGET_SESSIONS = 60
 
+#: 거래일 집합을 셀 때 훑는 종목 수. 전 종목을 읽을 이유가 없다 —
+#: 유동성 있는 종목 몇 개면 거래일 집합은 같다.
+SAMPLE_SYMBOLS = 30
+
 
 class JobFailed(Exception):
     """잡이 실패했음을 크론에 알린다.
@@ -309,6 +313,58 @@ def job_session_report(ctx: JobContext, now: Optional[datetime] = None) -> str:
     return msg
 
 
+def job_data_progress(ctx: JobContext, now: Optional[datetime] = None) -> str:
+    """이 fold 밖의 **새 데이터**가 얼마나 쌓였는지 센다.
+
+    왜 따로 세는가 — `fetch` 는 과거 이력까지 받아 온다. 그냥 모아 두고
+    나중에 전 구간으로 백테스트하면, 이미 다섯 번 참조한 2016~2026 fold 를
+    여섯 번째로 보게 된다. Bailey et al.(AMS 2014) 이 경고한 지점 그대로다.
+
+    그래서 **탐색을 종료한 시점을 파일에 못 박고**, 그보다 뒤의 거래일만
+    센다. 이 경계는 처음 한 번만 기록되고 이후 바뀌지 않는다 — 나중에
+    유리한 쪽으로 옮기고 싶어지는 것이 정확히 이 게이트가 막는 것이다.
+    """
+    now = now or now_kst()
+    marker = os.path.join(ctx.runs_dir, "fresh-data-since.json")
+    if os.path.exists(marker):
+        with open(marker, encoding="utf-8") as fh:
+            since = date.fromisoformat(json.load(fh)["since"])
+    else:
+        since = now.date()
+        os.makedirs(ctx.runs_dir, exist_ok=True)
+        with open(marker, "w", encoding="utf-8", newline="") as fh:
+            json.dump({"since": since.isoformat(),
+                       "recorded_at": now.isoformat(timespec="seconds"),
+                       "note": "이 날짜보다 뒤의 거래일만 새 데이터로 센다. "
+                               "옮기지 않는다 — 옮기는 순간 fold 재사용이다."},
+                      fh, ensure_ascii=False, indent=1)
+        log.info("새 데이터 경계를 %s 로 기록했습니다: %s", since, marker)
+
+    provider = ctx.provider()
+    symbols = provider.universe()
+    if not symbols:
+        raise JobFailed(f"data-progress: 캐시에 종목이 없습니다 ({ctx.cache_dir})")
+    # 거래일 집합은 유동성 있는 종목 몇 개만 봐도 같다. 전 종목을 읽으면
+    # 수천 개 CSV 를 매일 훑게 되고, 그럴 이유가 없다.
+    fresh_days = set()
+    for sym in symbols[:SAMPLE_SYMBOLS]:
+        try:
+            for bar in provider.history(sym, limit=400):
+                if bar.day > since:
+                    fresh_days.add(bar.day)
+        except DataError:
+            continue
+
+    n = len(fresh_days)
+    latest = max(fresh_days).isoformat() if fresh_days else "없음"
+    done = ("  ** 60거래일 확보 — 이 구간으로 시험할 수 있습니다 **"
+            if n >= TARGET_SESSIONS else "")
+    msg = (f"data-progress: 새 데이터 {n}/{TARGET_SESSIONS}거래일 "
+           f"(경계 {since} 이후, 최신 {latest}, 종목 {len(symbols)}개){done}")
+    ctx.notifier.info(msg)
+    return msg
+
+
 # ---------------------------------------------------------- 세션 일지 ----
 
 def _append_journal(path: str, row: Dict) -> None:
@@ -350,6 +406,7 @@ JOBS: Dict[str, Callable[[JobContext, Optional[datetime]], str]] = {
     "paper-session": job_paper_session,
     "session-report": job_session_report,
     "collect-daily": job_collect_daily,
+    "data-progress": job_data_progress,
     # 데이트레이딩 잡 — 표준 스케줄에서는 빠졌다. 회전율이 성립하지 않는다.
     "morning-entry": job_morning_entry,
     "eod-flat": job_eod_flat,

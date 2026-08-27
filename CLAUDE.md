@@ -206,4 +206,4 @@ python -m autotrader paper --state runs/state.json --order-log runs/orders.jsonl
 | **왜 일봉 전략군을 폐기했나** — 비용 장벽 계산과 문헌 근거 | `docs/STRATEGY-RESET-2026-08-26.md` |
 | 저회전 팩터 규격 (사전등록) 과 그 실패 기록 | `docs/LOW-TURNOVER-SPEC.md` · `docs/LOW-TURNOVER-RESULTS-2026-08-26.md` |
 | 외부에서 전략 제안을 받았을 때 — 7단계 체크리스트 | `docs/PROPOSAL-REVIEW-2026-08-26.md` |
-| **60거래일 모의투자를 크론으로 돌릴 때** — 설치·진척확인·고장진단 | `docs/LINUX-CRON.md` |
+| **크론으로 새 데이터를 쌓고 모의투자를 돌릴 때** — 설치·진척확인·고장진단 | `docs/LINUX-CRON.md` |

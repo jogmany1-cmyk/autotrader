@@ -657,7 +657,23 @@ def cmd_edge(args) -> int:
 # 표준 스케줄 프로파일. 표현식은 이 저장소 내부 규약(0=월 … 6=일)으로 쓴다 —
 # crontab 으로 내보낼 때 scheduler 가 cron 규약(0=일)으로 변환한다.
 SCHEDULE_PROFILES = {
-    # 기본. "새 데이터로만 다시 시도한다" 를 굴리는 세트.
+    # 기본. 1단계 — 전략 없이 새 데이터부터 쌓는다.
+    #
+    # 지금 레지스트리에 승인된 전략이 하나도 없다(전부 폐기했다). 그래서
+    # paper 프로파일은 매일 실패로 끝난다. 그것이 옳은 동작이지만, 그 상태로
+    # 크론을 걸어 둘 이유는 없다.
+    #
+    # 이 세트는 전략과 무관하게 가치가 있다:
+    #   · 시험할 전략이 정해지기 전에 새 구간 데이터가 쌓이기 시작한다
+    #   · 크론·자격증명·경로가 실제로 도는지 먼저 드러난다
+    #
+    # 전략이 정해지면 --profile paper 로 바꿔 단다.
+    "collect": [
+        ("collect-daily", "45 15 * * 0-4", "15:45 장 마감 후 일봉 수집"),
+        ("validate-data", "0 16 * * 0-4", "16:00 데이터 무결성 게이트 (실패 시 exit 1)"),
+        ("data-progress", "15 16 * * 0-4", "16:15 이 fold 밖의 새 데이터가 며칠 쌓였나"),
+    ],
+    # 2단계 — 승인된 전략이 생긴 뒤. "새 데이터로만 다시 시도한다" 를 굴리는 세트.
     #
     # 하루의 순서가 승격 경로 그대로다:
     #   09:05 (D)  전일까지의 봉으로 판단 → 오늘 시가 체결   ← 장중이어야 한다
@@ -863,6 +879,9 @@ def cmd_schedule(args) -> int:
     print(f"# autotrader 표준 크론잡 — profile={args.profile}")
     if args.profile == "daytrade":
         print(DAYTRADE_WARNING)
+    if args.profile == "collect":
+        print("# 1단계: 전략 없이 새 데이터부터 쌓는다. 승인된 전략이 생기면")
+        print("#        --profile paper 로 바꿔 모의매매를 추가한다.")
     print(f"# 설치: autotrader schedule --profile {args.profile} "
           f"--prefix '<래퍼 경로> ' | crontab -")
     print("# 확인: autotrader schedule --check   (등록됐다고 믿지 말고 확인한다)")
@@ -1036,9 +1055,11 @@ def main(argv: Optional[list] = None) -> int:
     p_rec.set_defaults(func=cmd_reconcile)
 
     p_sch = sub.add_parser("schedule", help="표준 크론잡을 crontab 라인으로 출력")
-    p_sch.add_argument("--profile", default="paper",
+    p_sch.add_argument("--profile", default="collect",
                        choices=sorted(SCHEDULE_PROFILES),
-                       help="paper=60거래일 모의투자(기본) · daytrade=매일 전량청산(비권장)")
+                       help="collect=새 데이터 수집만(기본, 전략 불필요) · "
+                            "paper=60거래일 모의투자(승인된 전략 필요) · "
+                            "daytrade=매일 전량청산(비권장)")
     p_sch.add_argument("--prefix", default="python -m autotrader run-job ",
                        help="crontab 명령 프리픽스")
     p_sch.add_argument("--check", action="store_true",
