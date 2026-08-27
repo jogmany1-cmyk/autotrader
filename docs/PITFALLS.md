@@ -473,3 +473,34 @@ WebSocket 이 끊겼다 붙으면 브로커가 놓친 체결통보를 다시 밀
 
 `return_code` 와 토큰 존재를 확인하고, 무엇을 고쳐야 하는지(앱키·모드)까지
 메시지에 넣는다.
+
+## 43. `capture_output=True` 는 stdin 을 상속한다 — Windows 에서 터진다
+
+`subprocess.run(..., capture_output=True)` 는 stdout/stderr 만 파이프로 잡고
+**stdin 은 부모에서 그대로 상속**한다. pytest 캡처 아래의 Windows 에서는
+부모의 stdin 핸들이 유효하지 않을 수 있고, 그러면 핸들 복제에서 죽는다:
+
+```
+OSError: [WinError 6] 핸들이 잘못되었습니다
+  subprocess.py: _make_inheritable → _winapi.DuplicateHandle
+```
+
+Windows + Python 3.14 에서 `test_stdlib_only.py` 만 이렇게 실패했다. 리눅스
+개발 환경에서는 재현되지 않는다 — **사용자 환경에서만 깨지는 종류**다.
+
+자식이 입력을 읽지 않는다면 `stdin=subprocess.DEVNULL` 을 명시한다.
+
+## 44. Windows 의 TEMP 가 남의 폴더를 가리킬 수 있다
+
+사용자 환경에서 `TEMP` 가 `C:\Users\Public\Documents\ESTsoft\CreatorTemp`
+(알집 계열 프로그램이 만든 경로)로 잡혀 있어 **쓰기 권한이 없었고**, pytest 의
+`tmp_path` 를 쓰는 테스트 50개가 한꺼번에 `PermissionError` 로 죽었다.
+
+코드 문제가 아니므로 고칠 것은 없지만, 사용자가 "테스트가 50개 실패한다" 고
+가져왔을 때 **코드를 뒤지기 전에 이것부터 의심한다.** 우회는 이렇게 한다:
+
+```powershell
+python -m pytest -q --basetemp="$env:USERPROFILE\AppData\Local\Temp\pytest"
+```
+
+오류 메시지에 `Public\Documents` 나 낯선 회사 이름이 보이면 이 경우다.
