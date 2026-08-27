@@ -109,13 +109,13 @@ def main() -> int:
     # 임포트가 깨져 있으면 백테스트 검사는 같은 원인으로 또 터질 뿐이다.
     failures = check_imports() or check_backtest_runs()
     if failures:
-        print(f"\n\033[31m✗ stdlib-only 위반 {len(failures)}건\033[0m")
+        print(f"\n\033[31m[FAIL] stdlib-only 위반 {len(failures)}건\033[0m")
         for name, why in failures:
             print(f"  {name}: {why}")
         print("\n런타임 코드에서 위 패키지를 쓰려면 함수 안에서 늦게 임포트하고,"
               "\n없을 때의 동작을 정의해야 합니다 (broker/kis.py 참고).")
         return 1
-    print("\n\033[32m✓ 전 모듈 임포트 + 백테스트 한 바퀴가 표준 라이브러리만으로 동작\033[0m")
+    print("\n\033[32m[OK] 전 모듈 임포트 + 백테스트 한 바퀴가 표준 라이브러리만으로 동작\033[0m")
     return 0
 
 

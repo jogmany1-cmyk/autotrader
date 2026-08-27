@@ -698,7 +698,37 @@ def _dump_report(rep) -> None:
             print(f"  {k:<24}{v:>12}")
 
 
+def _make_stdout_never_crash() -> None:
+    """파이프로 나가는 출력이 인코딩 때문에 죽지 않게 한다.
+
+    파이썬은 **콘솔에 직접** 쓸 때는 Windows 유니코드 콘솔 API 를 쓰지만,
+    출력이 **파이프로 넘어가면** locale 기본 인코딩으로 떨어진다. 한글
+    Windows 에서 그것은 cp949 이고, `—`(U+2014) `✓`(U+2713) `ó` 같은 문자가
+    거기 없다:
+
+        UnicodeEncodeError: 'cp949' codec can't encode character '\\u2713'
+
+    그래서 같은 명령이 **콘솔에서는 되고 리다이렉트하면 죽는다.** 실제로
+    `python -m autotrader lowturnover` 는 잘 돌았는데, subprocess 로 부른
+    검사 스크립트만 이 이유로 실패했다.
+
+    출력 문자를 전부 ASCII 로 제한하는 것은 한국어 리포트에서 현실적이지
+    않으므로, **인코딩 실패를 치명적이지 않게** 만든다. 못 쓰는 문자는
+    물음표로 바뀌지만 매매·검증 결과는 그대로 나온다 — 리포트 한 글자
+    때문에 실행 전체가 죽는 것보다 낫다.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:      # 파이프가 아닌 특수 스트림 등
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError):   # pragma: no cover - 환경 의존
+            pass
+
+
 def main(argv: Optional[list] = None) -> int:
+    _make_stdout_never_crash()
     parser = argparse.ArgumentParser("autotrader")
     parser.add_argument("--csv", help="CSV 데이터 디렉터리")
     parser.add_argument("--config", help="config.yaml 경로")

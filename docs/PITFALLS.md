@@ -504,3 +504,37 @@ python -m pytest -q --basetemp="$env:USERPROFILE\AppData\Local\Temp\pytest"
 ```
 
 오류 메시지에 `Public\Documents` 나 낯선 회사 이름이 보이면 이 경우다.
+
+## 45. 콘솔에선 되고 파이프로 넘기면 죽는다 (cp949)
+
+파이썬은 **콘솔에 직접** 쓸 때 Windows 유니코드 콘솔 API 를 쓰지만, 출력이
+**파이프로 넘어가면** locale 기본 인코딩으로 떨어진다. 한글 Windows 에서
+그것은 cp949 이고 `—`(U+2014) `✓`(U+2713) `ó` 가 거기 없다.
+
+```
+UnicodeEncodeError: 'cp949' codec can't encode character '✓'
+```
+
+실제로 겪은 모습이 헷갈린다:
+
+- `python -m autotrader lowturnover` → 콘솔 → **정상**
+- 같은 코드를 `subprocess.run(..., capture_output=True)` 로 → 파이프 → **죽음**
+- `> out.txt` 나 `| Select-String` 도 마찬가지
+
+그래서 "내 화면에선 잘 되는데" 가 성립한다. #43 을 고쳐 WinError 6 이 사라지자
+그 뒤에 가려져 있던 이 문제가 드러났다.
+
+**소스를 눈으로 훑는 검사로는 못 잡는다.** 주석 속 `—` 는 무해하고 `print` 로
+나가는 것만 문제인데, 그 둘을 정적으로 가르기 어렵다. 실제로 cp949 파이프를
+만들어 실행하는 테스트만이 잡는다 (`tests/test_cp949_output.py`,
+`PYTHONIOENCODING=cp949`).
+
+대응은 두 갈래로 나눴다:
+
+- **진단 스크립트**(`scripts/check_stdlib_only.py`)는 출력을 ASCII 로 제한한다.
+  환경이 이상할 때 돌리는 물건이라 어떤 인코딩에서도 읽혀야 한다.
+  `✓`/`✗` → `[OK]`/`[FAIL]`.
+- **CLI 리포트**는 한국어라 ASCII 제한이 비현실적이다. 대신 진입점에서
+  `sys.stdout.reconfigure(errors="replace")` 로 **인코딩 실패를 치명적이지
+  않게** 만든다. 못 쓰는 글자는 물음표가 되지만 결과는 나온다 — 리포트 한
+  글자 때문에 실행 전체가 죽는 것보다 낫다.
