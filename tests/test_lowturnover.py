@@ -5,6 +5,7 @@
 없다. **회전율을 줄이는 것만이 남은 방향**이다. 그래서 여기서 가장 중요하게
 고정하는 것은 신호의 품질이 아니라 **회전율 상한과 밴딩의 작동**이다.
 """
+import math
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -209,3 +210,169 @@ def test_daily_trading_turnover_would_blow_the_ceiling():
 
 def test_zero_years_does_not_divide_by_zero():
     assert lt.annual_turnover([], years=0.0) == 0.0
+
+
+# ---- 실행기 ----------------------------------------------------------------
+#
+# 여기서 고정하는 것들은 전부 **실제로 겪은 버그**다:
+#   - 자본 100% 를 배분하면 체결비용 탓에 뒤쪽 종목이 조용히 실패한다
+#   - 기존 보유를 재조정하지 않으면 현금이 없어 신규 편입이 영구히 실패한다
+#   - 종목당 예산보다 비싼 주식은 1주도 못 사는데 이유가 리포트에 안 남는다
+
+from autotrader.config import Config
+
+
+class _Prov:
+    """KRX 스러운 가격대(3천~34만원). 기본 합성 공급자는 드리프트가 연
+    158% 까지 가서 가격이 폭발하므로 이 검증에는 부적합하다."""
+
+    def __init__(self, n=1400, k=40, base=3_000, step=8_500, drifting_vol=False):
+        """`drifting_vol=True` 면 종목별 변동성이 시간에 따라 오르내려 **순위가
+        실제로 바뀐다.** 고정 변동성이면 순위가 영원히 그대로라 편입·편출이
+        원천적으로 0이 되어, 교체 관련 검사가 성립하지 않는다."""
+        self.n, self._bars = n, {}
+        for i in range(k):
+            price = base + i * step
+            base_vol = 0.008 + (i % 7) * 0.004
+            drift = 1.0 + 0.00015 * ((i % 5) - 2)
+            bars, x = [], i * 7919 + 13
+            for d in range(n):
+                vol = base_vol
+                if drifting_vol:
+                    # 종목마다 다른 주기로 변동성이 오르내린다 (0.5x ~ 1.5x).
+                    phase = (d / 180.0) + i * 0.37
+                    vol = base_vol * (1.0 + 0.5 * math.sin(phase))
+                x = (1103515245 * x + 12345) % (2 ** 31)
+                shock = ((x % 2001) - 1000) / 1000.0 * vol
+                price = max(1000.0, price * (drift + shock))
+                bars.append(Bar(datetime(2021, 1, 4) + timedelta(days=d),
+                                price, price * 1.01, price * 0.99, price, 300_000))
+            self._bars[f"S{i:03d}"] = bars
+
+    def universe(self):
+        return list(self._bars)
+
+    def history(self, s, limit=500):
+        return self._bars[s][-limit:]
+
+
+def _cfg(capital=50_000_000):
+    c = Config.default()
+    c.backtest.initial_cash = capital
+    c.universe.min_price = 0
+    c.universe.min_avg_dollar_vol = 0
+    return c
+
+
+def _run(capital=50_000_000, target=25, **kw):
+    return lt.run_lowturnover(_Prov(), _cfg(capital), history_bars=1400,
+                              target=target, **kw)
+
+
+def test_runner_produces_a_complete_report():
+    rep = _run()
+    assert rep.events and rep.trades
+    assert rep.performance is not None and rep.cost_audit is not None
+    assert rep.start < rep.end and rep.years > 1
+
+
+def test_enough_capital_fills_every_target_slot():
+    """자본 100% 배분 시 뒤쪽이 현금부족으로 실패하던 버그의 회귀 테스트."""
+    rep = _run(capital=50_000_000, target=25)
+    last = rep.events[-1]
+    assert len(last.holdings) == 25, f"보유 {len(last.holdings)}/25"
+    assert not last.unfilled
+
+
+def test_small_capital_reports_which_symbols_it_cannot_afford():
+    """종목당 예산보다 비싼 주식은 담을 수 없다 — 자본 규모의 물리적 한계.
+    코드 버그가 아니지만 **조용히 빠지면 보유 미달의 이유를 알 수 없다.**"""
+    rep = _run(capital=10_000_000, target=25)
+    last = rep.events[-1]
+    assert last.too_expensive, "예산 초과 종목이 기록되지 않았다"
+    assert len(last.holdings) + len(last.too_expensive) <= 25
+
+
+def test_existing_holdings_are_rebalanced_not_just_topped_up():
+    """기존 보유를 재조정하지 않으면 현금이 없어 신규 편입이 영구 실패한다.
+    실제로 그 상태에서는 보유가 목표의 절반에서 멈췄다.
+
+    교체가 **일어날 수 있는** 조건을 만들어야 검사가 성립한다. 유니버스가
+    40종목인데 exit_rank 도 40이면 아무도 밖으로 밀려나지 않아 편입·편출이
+    원천적으로 0이 된다 — 그 상태로 검사하면 항상 실패한다.
+    """
+    rep = lt.run_lowturnover(_Prov(k=40, drifting_vol=True), _cfg(),
+                             history_bars=1400, target=10,
+                             entry_rank=10, exit_rank=14)
+    later = [e for e in rep.events[2:] if e.added]
+    assert later, "첫 리밸런싱 이후 신규 편입이 한 번도 체결되지 않았다"
+    for e in later:
+        assert not e.unfilled, f"{e.ts.date()} 에 미체결 {e.unfilled}"
+    # 그리고 목표 종목 수를 계속 유지해야 한다 (예산 초과분 제외).
+    for e in rep.events[1:]:
+        assert len(e.holdings) + len(e.too_expensive) >= 9
+
+
+def test_turnover_stays_under_the_spec_ceiling():
+    """이 규격의 존재 이유. 넘으면 비용이 우위를 먹는 쪽으로 돌아간 것이다."""
+    rep = _run()
+    assert 0 < rep.annual_turnover <= lt.MAX_ANNUAL_TURNOVER
+
+
+def test_true_turnover_counts_rebalancing_trades_events_miss():
+    """사건 수 기반 추정은 비중 재조정(trim/topup)을 통째로 빠뜨린다."""
+    rep = _run()
+    assert rep.annual_turnover > 0 and rep.annual_turnover_from_events >= 0
+    assert rep.annual_turnover != rep.annual_turnover_from_events
+
+
+def test_costs_use_the_corrected_model():
+    """이 규격의 근거가 비용이므로 비용 모델이 새 것이어야 의미가 있다."""
+    rep = _run()
+    assert rep.cost_audit.slippage_bp > 5.0      # 틱 기반 → 고정 5bp 초과
+    assert rep.cost_audit.total_taxes > 0
+
+
+def test_benchmark_is_computed_and_named():
+    """벤치마크가 KOSPI 가 아니라는 사실이 리포트에 남아야 한다 (규격 §5 이탈)."""
+    rep = _run()
+    assert rep.benchmark_n_symbols > 0
+    assert lt.BENCHMARK_NAME == "universe-equal-weight-buy-and-hold"
+    assert rep.excess_return == pytest.approx(
+        rep.performance.net_return - rep.benchmark_return)
+
+
+def test_news_veto_blocks_new_entries_only():
+    """수비 필터는 신규 편입만 막는다. 편출까지 막으면 거래정지 종목을
+    강제로 계속 들고 있게 된다 — 팔 수 있을 때 팔아야 한다."""
+    plain = _run()
+    held_first = plain.events[1].holdings[0]
+    blocked = _run(blocked_symbols={held_first: "거래정지(테스트)"})
+    hits = [e for e in blocked.events if e.blocked]
+    assert hits, "차단이 기록되지 않았다"
+    for e in blocked.events:
+        assert held_first not in e.added
+
+
+def test_too_short_history_fails_loudly():
+    with pytest.raises(RuntimeError, match="봉"):
+        lt.run_lowturnover(_Prov(n=100), _cfg(), history_bars=100)
+
+
+def test_judge_uses_the_spec_criteria_not_profit_factor():
+    """PF 1.20 을 쓰지 않는다 — 거래 수가 적고 보유가 길면 PF 는 소수
+    종목에 지배되어 안정적 통계가 아니다 (규격 §5)."""
+    names = [n for n, _, _ in lt.judge_lowturnover(_run(), n_trials=5)]
+    assert not any("PF" in n or "Profit Factor" in n for n in names)
+    assert any("초과수익" in n for n in names)
+    assert any("회전율" in n for n in names)
+    assert any("Deflated Sharpe" in n for n in names)
+
+
+def test_declaring_more_trials_can_flip_the_deflated_sharpe_check():
+    """같은 성과라도 시도 횟수를 정직하게 선언하면 탈락할 수 있다."""
+    rep = _run()
+    def dsr(n):
+        return [d for name, _, d in lt.judge_lowturnover(rep, n_trials=n)
+                if "Deflated" in name][0]
+    assert float(dsr(1).split()[0]) >= float(dsr(5000).split()[0])

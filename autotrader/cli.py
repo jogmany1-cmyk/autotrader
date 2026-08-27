@@ -370,6 +370,102 @@ def cmd_walkforward(args) -> int:
     return 0 if ok else 1
 
 
+def cmd_lowturnover(args) -> int:
+    """저회전 팩터 포트폴리오. 규격은 docs/LOW-TURNOVER-SPEC.md.
+
+    종료코드 0 = 사전 등록 기준 전부 충족, 1 = 하나라도 미달, 2 = 실행 불가.
+    """
+    from . import lowturnover as lt
+
+    provider = _provider(args.csv)
+    cfg = _config(args.config, provider, args.cost_model)
+    if isinstance(provider, SyntheticProvider):
+        cfg.universe.min_price = 0
+        cfg.universe.min_avg_dollar_vol = 0
+    if args.capital:
+        cfg.backtest.initial_cash = float(args.capital)
+    try:
+        rep = lt.run_lowturnover(provider, cfg, symbols=args.symbol,
+                                 history_bars=args.bars, target=args.holdings)
+    except (RuntimeError, ValueError) as exc:
+        print(f"[ERROR] {exc}")
+        return 2
+
+    c, perf = rep.cost_audit, rep.performance
+    print("== 저회전 팩터 포트폴리오 (docs/LOW-TURNOVER-SPEC.md) ==")
+    print(f"  구간 {rep.start} ~ {rep.end} ({rep.years:.1f}년) · "
+          f"목표 {args.holdings}종목 동일가중 · 반기 리밸런싱")
+    print(f"  자본 {cfg.backtest.initial_cash:,.0f}원 "
+          f"→ 종목당 예산 {cfg.backtest.initial_cash/args.holdings:,.0f}원")
+    _c = cfg.costs
+    _slip = (f"틱×{_c.slippage_ticks:g}" if _c.slippage_mode == "tick"
+             else f"고정 {_c.slippage_bp:g}bp")
+    print(f"  비용: 세금 {_c.tax_sell_bp:g}bp · 슬리피지 {_slip}"
+          + ("  ← 정정 전 모델. 낙관 편향" if _c.slippage_mode == "fixed" else ""))
+    print("  ※ 가치 팩터 미포함 — 재무 데이터 경로가 없어 저변동성 단독 (규격 §8)")
+
+    print(f"\n  {'일자':<12}{'보유':>5}{'편입':>5}{'편출':>5}{'예산초과':>9}{'차단':>6}")
+    print("  " + "-" * 44)
+    for e in rep.events:
+        print(f"  {e.ts.date().isoformat():<12}{len(e.holdings):>5}"
+              f"{len(e.added):>5}{len(e.removed):>5}"
+              f"{len(e.too_expensive):>9}{len(e.blocked):>6}")
+
+    print(f"\n  순수익      {perf.net_return:>+10.4f}")
+    print(f"  벤치마크    {rep.benchmark_return:>+10.4f}  "
+          f"({lt.BENCHMARK_NAME}, {rep.benchmark_n_symbols}종목)")
+    print(f"  초과수익    {rep.excess_return:>+10.4f}  ← 이 전략의 존재 이유")
+    print(f"  MDD         {perf.max_drawdown:>+10.4f}")
+    print(f"  연 회전율   {rep.annual_turnover:>10.2f}배  "
+          f"(사건기준 {rep.annual_turnover_from_events:.2f}배)")
+    print(f"  총비용      {c.total_cost:>10,.0f}원  "
+          f"(체결 {c.n_fills}건, 적용슬립 {c.slippage_bp:.2f}bp)")
+
+    checks = lt.judge_lowturnover(rep, n_trials=args.trials)
+    print()
+    for name, ok, detail in checks:
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name:<46} {detail}")
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            json.dump({
+                "spec": "docs/LOW-TURNOVER-SPEC.md",
+                "start": rep.start, "end": rep.end, "years": round(rep.years, 2),
+                "settings": {
+                    "target_holdings": args.holdings,
+                    "capital": cfg.backtest.initial_cash,
+                    "n_trials_declared": args.trials,
+                    "value_factor_included": False,
+                    "costs": {"tax_sell_bp": _c.tax_sell_bp,
+                              "commission_bp": _c.commission_bp,
+                              "slippage_mode": _c.slippage_mode,
+                              "slippage_bp": _c.slippage_bp,
+                              "slippage_ticks": _c.slippage_ticks},
+                },
+                "performance": perf.to_dict(),
+                "benchmark": {"name": lt.BENCHMARK_NAME,
+                              "return": rep.benchmark_return,
+                              "n_symbols": rep.benchmark_n_symbols,
+                              "excess_return": rep.excess_return},
+                "annual_turnover": rep.annual_turnover,
+                "annual_turnover_from_events": rep.annual_turnover_from_events,
+                "cost_audit": c.to_dict() if c is not None else None,
+                "rebalances": [e.as_dict() for e in rep.events],
+                "verdict": {"passed": all(ok for _, ok, _ in checks),
+                            "checks": [{"name": n, "ok": ok, "detail": d}
+                                       for n, ok, d in checks]},
+                "caveat": ("탐색 검증이다. 통과해도 승격 근거가 아니며 미사용 "
+                           "데이터와 최소 60거래일 페이퍼 트레이딩이 별도로 필요하다."),
+            }, fh, indent=2, ensure_ascii=False)
+        print(f"\n  → {args.output} 에 저장")
+
+    ok = all(o for _, o, _ in checks)
+    print(f"\n  판정: {'PASS' if ok else 'FAIL'}")
+    print("  [WARN] 탐색 검증이다. 통과해도 승격 근거가 아니며 미사용 데이터와 "
+          "최소 60거래일 페이퍼 트레이딩이 별도로 필요하다.")
+    return 0 if ok else 1
+
+
 def cmd_run_job(args) -> int:
     """v0.8 스케줄러가 crontab 에서 호출할 표준 잡 실행."""
     from .jobs import JobContext, run
@@ -746,6 +842,25 @@ def main(argv: Optional[list] = None) -> int:
                            "정직하게 세어 넣어야 한다 (기본 1 = 보정 없음)")
     p_wf.add_argument("--output", help="결과 JSON 저장 경로")
     p_wf.set_defaults(func=cmd_walkforward)
+
+    p_lt = sub.add_parser(
+        "lowturnover",
+        help="저회전 팩터 포트폴리오 (반기 리밸런싱·동일가중). 규격 docs/LOW-TURNOVER-SPEC.md")
+    p_lt.add_argument("--bars", type=int, default=2500,
+                      help="종목당 사용할 봉 수 (기본 2500)")
+    p_lt.add_argument("--holdings", type=int, default=25,
+                      help="동일가중 목표 종목 수 (기본 25 = 규격값)")
+    p_lt.add_argument("--capital", type=float,
+                      help="초기 자본. 종목당 예산 = 자본÷보유수 이므로 자본이 "
+                           "작으면 고가주를 담지 못한다 (1,000만원이면 종목당 40만원)")
+    p_lt.add_argument("--cost-model", default="current",
+                      choices=["current", "legacy"],
+                      help="current = 2026 세율 + 틱 슬리피지(기본)")
+    p_lt.add_argument("--trials", type=int, default=1,
+                      help="이 데이터에 시도한 설정 수. Deflated Sharpe 보정에 쓴다")
+    p_lt.add_argument("--symbol", action="append", help="종목 지정 (반복)")
+    p_lt.add_argument("--output", help="결과 JSON 저장 경로")
+    p_lt.set_defaults(func=cmd_lowturnover)
 
     p_rj = sub.add_parser("run-job", help="스케줄러가 크론에서 호출하는 표준 잡 실행")
     p_rj.add_argument("name", choices=["morning-entry", "eod-flat",
