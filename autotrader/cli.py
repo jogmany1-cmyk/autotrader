@@ -166,12 +166,13 @@ def cmd_paper(args) -> int:
                         ensemble_min_votes=args.votes,
                         trail_pct=args.trail, dry_run=args.dry_run,
                         registry=reg, validated_only=args.validated_only,
-                        order_log=args.order_log, state_path=args.state)
+                        order_log=args.order_log, state_path=args.state,
+                        account_path=args.account)
     trader.allow_pre_market = args.allow_pre_market
     trader.allow_after_market = args.allow_after_market
     # 재시작 복구. 건너뛰면 이미 들고 있는 종목에 또 들어가고, 일일 진입
     # 상한이 0 부터 다시 세어지고, 손절선을 몰라 스탑이 안 걸린다.
-    if args.state:
+    if args.state or args.account:
         for note in trader.recover():
             print(f"  {note}")
     if reg is not None:
@@ -763,6 +764,11 @@ def main(argv: Optional[list] = None) -> int:
                            "손절선·일일카운터·쿨다운·EOD 수행여부가 재시작을 건넌다")
     p_pp.add_argument("--order-log", default=None,
                       help="미결 주문 장부 JSONL (예: runs/orders.jsonl)")
+    p_pp.add_argument("--account", default=None,
+                      help="페이퍼 계좌 파일 (예: runs/account.json). 지정하면 "
+                           "현금·보유종목·청산기록이 프로세스를 건넌다. 크론으로 "
+                           "여러 날에 걸쳐 모의투자를 누적하려면 반드시 필요하다 "
+                           "— 없으면 매 실행이 initial_cash 로 되돌아간다")
     p_pp.add_argument("--allow-pre-market", action="store_true", default=False,
                       help="NXT 프리마켓(08:00~08:59) 참여")
     p_pp.add_argument("--allow-after-market", action="store_true", default=False,

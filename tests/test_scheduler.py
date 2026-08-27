@@ -55,7 +55,10 @@ def test_registry_crontab_export_matches_registration():
     reg = JobRegistry()
     reg.register("j1", "0 15 * * 0-4", lambda t: None, description="x")
     lines = reg.crontab_lines(prefix_command="run ")
-    assert "0 15 * * 0-4 run j1" in lines[0]
+    # 요일 필드는 cron 규약(0=일)으로 변환되어 나간다. 내부 0-4(월~금)를
+    # 그대로 내보내면 cron 이 일~목으로 읽어 금요일이 빠진다.
+    # 자세한 고정은 tests/test_cron_weekday_export.py.
+    assert "0 15 * * 1,2,3,4,5 run j1" in lines[0]
     assert "# x" in lines[0]
 
 
