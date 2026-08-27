@@ -30,7 +30,10 @@ CLI 하나로 백테스트·모의매매·시세수집이 전부 돌아간다. �
   동작한다. 사람에게 폴더 위치를 설명할 때만 `바탕화면\autotrader` 처럼 쓴다.
 - **`scripts/verify.sh` 는 PowerShell 에서 안 돈다** — Git Bash 에서 돌려야 한다.
 - **cron 이 없다.** `autotrader schedule` 이 뱉는 crontab 라인을 Windows 작업
-  스케줄러가 소비할 수 없다. 이 갭은 아직 메워져 있지 않다.
+  스케줄러가 소비할 수 없다. **해법은 변환기가 아니라 리눅스 머신이다** —
+  키움 REST API 가 크로스플랫폼이라 안 쓰는 노트북에 리눅스를 올리면 그대로
+  돈다. 절차는 `docs/LINUX-CRON.md`. Windows 에서 계속 쓰려면 WSL2 도 되지만
+  cron 데몬을 부팅마다 띄워야 하고 잠들면 안 돈다.
 
 런타임 코드 자체는 Windows-clean 이다 (추정이 아니라 확인함): POSIX 전용 임포트
 없음, 하드코딩된 POSIX 경로 없음, `os.path.join` 사용, 모든 `open()` 이 encoding
@@ -203,3 +206,4 @@ python -m autotrader paper --state runs/state.json --order-log runs/orders.jsonl
 | **왜 일봉 전략군을 폐기했나** — 비용 장벽 계산과 문헌 근거 | `docs/STRATEGY-RESET-2026-08-26.md` |
 | 저회전 팩터 규격 (사전등록) 과 그 실패 기록 | `docs/LOW-TURNOVER-SPEC.md` · `docs/LOW-TURNOVER-RESULTS-2026-08-26.md` |
 | 외부에서 전략 제안을 받았을 때 — 7단계 체크리스트 | `docs/PROPOSAL-REVIEW-2026-08-26.md` |
+| **60거래일 모의투자를 크론으로 돌릴 때** — 설치·진척확인·고장진단 | `docs/LINUX-CRON.md` |
