@@ -468,14 +468,23 @@ def cmd_lowturnover(args) -> int:
 
 
 def cmd_run_job(args) -> int:
-    """v0.8 스케줄러가 crontab 에서 호출할 표준 잡 실행."""
-    from .jobs import JobContext, run
-    ctx = JobContext(cache_dir=args.cache, registry_path=args.registry)
+    """크론이 호출하는 표준 잡 실행.
+
+    종료코드 0 = 성공, 1 = 잡 실패, 2 = 알 수 없는 잡.
+    크론은 종료코드만 본다. 실패를 0 으로 끝내면 아무도 모른 채 다음 잡이
+    이어지고, 특히 무결성 게이트가 그렇게 되면 깨진 데이터가 그대로 흘러간다.
+    """
+    from .jobs import JobContext, JobFailed, run
+    ctx = JobContext(cache_dir=args.cache, registry_path=args.registry,
+                     runs_dir=args.runs)
     try:
         msg = run(args.name, ctx)
     except KeyError as exc:
         print(f"[ERROR] {exc}")
         return 2
+    except JobFailed as exc:
+        print(f"[FAIL] {exc}")
+        return 1
     print(msg)
     return 0
 
@@ -644,22 +653,71 @@ def cmd_edge(args) -> int:
     return 0
 
 
-def cmd_schedule(args) -> int:
-    """실전 자동매매 표준 크론잡 세트를 crontab 형식으로 출력.
-    이 라인들을 `crontab -e` 로 등록하거나 systemd timer 로 변환해 쓴다."""
+# 표준 스케줄 프로파일. 표현식은 이 저장소 내부 규약(0=월 … 6=일)으로 쓴다 —
+# crontab 으로 내보낼 때 scheduler 가 cron 규약(0=일)으로 변환한다.
+SCHEDULE_PROFILES = {
+    # 기본. "새 데이터로만 다시 시도한다" 를 굴리는 세트.
+    #
+    # 하루의 순서가 승격 경로 그대로다:
+    #   09:05 (D)  전일까지의 봉으로 판단 → 오늘 시가 체결   ← 장중이어야 한다
+    #   15:45 (D)  장 마감 후 일봉 수집
+    #   16:00 (D)  무결성 게이트 — 실패하면 종료코드 1 로 멈춘다
+    #   16:15 (D)  진척 리포트 (60거래일까지 며칠 남았는지)
+    #
+    # paper-session 을 장 마감 후로 옮기면 안 된다. LiveTrader.cycle() 은
+    # 휴장 중이면 즉시 반환하므로, 60일 내내 아무 일도 일어나지 않는다.
+    "paper": [
+        ("paper-session", "5 9 * * 0-4", "09:05 모의매매 세션 (전일 종가 판단 → 당일 시가 체결)"),
+        ("collect-daily", "45 15 * * 0-4", "15:45 장 마감 후 일봉 수집"),
+        ("validate-data", "0 16 * * 0-4", "16:00 데이터 무결성 게이트 (실패 시 exit 1)"),
+        ("session-report", "15 16 * * 0-4", "16:15 60거래일 진척·누적 성과"),
+    ],
+    # 매일 전량청산 데이트레이딩. 남겨는 두지만 기본이 아니다 —
+    # 회전율 연 343배면 왕복비용만 연 57~125% 라 성립하지 않는다.
+    # docs/STRATEGY-RESET-2026-08-26.md 참고.
+    "daytrade": [
+        ("collect-5m", "*/5 9-15 * * 0-4", "평일 장중 5분봉 수집"),
+        ("morning-entry", "30 9 * * 0-4", "09:30 진입 사이클"),
+        ("eod-flat", "0 15 * * 0-4", "15:00 EOD 일괄 청산"),
+        ("collect-daily", "45 15 * * 0-4", "장 마감 후 일봉 수집"),
+        ("post-analysis", "30 15 * * 0-4", "장 마감 후 사후 분석 리포트"),
+    ],
+}
+
+DAYTRADE_WARNING = """
+# ⚠ daytrade 프로파일은 매일 전량청산을 전제한다.
+#   연 회전율 343배 → 왕복비용만 연 57~125% (가격대별).
+#   측정된 우위는 거래당 -27.9bp ~ +8.0bp 였다. 비용을 못 넘는다.
+#   근거: docs/STRATEGY-RESET-2026-08-26.md
+""".strip()
+
+
+def build_schedule(profile: str):
+    """프로파일 이름으로 JobRegistry 를 만든다. 스케줄 검증도 이걸 쓴다 —
+    출력과 검증이 다른 소스를 보면 "등록했는데 안 맞는" 상태를 못 잡는다."""
     from .scheduler import JobRegistry
+    if profile not in SCHEDULE_PROFILES:
+        raise SystemExit(f"알 수 없는 프로파일: {profile} "
+                         f"(가능: {', '.join(SCHEDULE_PROFILES)})")
     reg = JobRegistry()
-    reg.register("collect-5m", "*/5 9-15 * * 0-4", lambda t: None,
-                 description="평일 장중 5분봉 수집")
-    reg.register("collect-daily", "45 15 * * 0-4", lambda t: None,
-                 description="장 마감 후 일봉 수집")
-    reg.register("morning-entry", "30 9 * * 0-4", lambda t: None,
-                 description="09:30 진입 사이클")
-    reg.register("eod-flat", "0 15 * * 0-4", lambda t: None,
-                 description="15:00 EOD 일괄 청산")
-    reg.register("post-analysis", "30 15 * * 0-4", lambda t: None,
-                 description="장 마감 후 사후 분석 리포트")
-    print("# autotrader 표준 자동매매 크론잡 (crontab -e 에 붙여 넣기)")
+    for name, expr, desc in SCHEDULE_PROFILES[profile]:
+        reg.register(name, expr, lambda t: None, description=desc)
+    return reg
+
+
+def cmd_schedule(args) -> int:
+    """표준 크론잡을 crontab 형식으로 출력.
+
+    요일 필드는 표준 cron 규약(0=일)으로 변환되어 나간다. 이 저장소 내부는
+    Python 규약(0=월)이라 변환 없이 심으면 금요일이 빠진다.
+    """
+    reg = build_schedule(args.profile)
+    print(f"# autotrader 표준 크론잡 — profile={args.profile}")
+    if args.profile == "daytrade":
+        print(DAYTRADE_WARNING)
+    print(f"# 설치: autotrader schedule --profile {args.profile} "
+          f"--prefix '<래퍼 경로> ' | crontab -")
+    print("# 확인: autotrader schedule --check   (등록됐다고 믿지 말고 확인한다)")
     for line in reg.crontab_lines(prefix_command=args.prefix):
         print(line)
     return 0
@@ -829,7 +887,10 @@ def main(argv: Optional[list] = None) -> int:
     p_rec.add_argument("--secondary", required=True, help="부 데이터 CSV 디렉터리 (예: KRX+NXT 통합)")
     p_rec.set_defaults(func=cmd_reconcile)
 
-    p_sch = sub.add_parser("schedule", help="표준 자동매매 크론잡을 crontab 라인으로 출력")
+    p_sch = sub.add_parser("schedule", help="표준 크론잡을 crontab 라인으로 출력")
+    p_sch.add_argument("--profile", default="paper",
+                       choices=sorted(SCHEDULE_PROFILES),
+                       help="paper=60거래일 모의투자(기본) · daytrade=매일 전량청산(비권장)")
     p_sch.add_argument("--prefix", default="python -m autotrader run-job ",
                        help="crontab 명령 프리픽스")
     p_sch.set_defaults(func=cmd_schedule)
@@ -899,13 +960,15 @@ def main(argv: Optional[list] = None) -> int:
     p_lt.set_defaults(func=cmd_lowturnover)
 
     p_rj = sub.add_parser("run-job", help="스케줄러가 크론에서 호출하는 표준 잡 실행")
-    p_rj.add_argument("name", choices=["morning-entry", "eod-flat",
-                                        "collect-daily", "collect-5m",
-                                        "post-analysis"],
-                      help="실행할 잡 이름")
+    # 목록을 여기 다시 적지 않는다. 두 곳에 적으면 잡을 추가할 때 한쪽만
+    # 고쳐서, 크론에는 있는데 CLI 가 거부하는 상태가 조용히 생긴다.
+    from .jobs import JOBS as _JOBS
+    p_rj.add_argument("name", choices=sorted(_JOBS), help="실행할 잡 이름")
     p_rj.add_argument("--cache", default="./data/kiwoom",
                       help="데이터 캐시 디렉터리")
     p_rj.add_argument("--registry", help="StrategyRegistry JSON 경로")
+    p_rj.add_argument("--runs", default="./runs",
+                      help="세션 산출물 디렉터리 (계좌·상태·주문장부·세션일지)")
     p_rj.set_defaults(func=cmd_run_job)
 
     args = parser.parse_args(argv)
