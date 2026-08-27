@@ -11,8 +11,9 @@ import argparse
 import json
 import logging
 import os
+import subprocess
 import sys
-from typing import Optional
+from typing import Dict, List, Optional, Sequence
 
 from .backtest import Backtester
 from .broker import PaperBroker
@@ -705,12 +706,159 @@ def build_schedule(profile: str):
     return reg
 
 
+#: 하루 한 번 도는 잡이 이 기간 안에 한 번도 안 돌았으면 뭔가 잘못된 것.
+#: 주말 + 연휴를 감안한 값이다.
+STALE_AFTER_DAYS = 4
+
+
+def _installed_crontab() -> "tuple[Optional[list], str]":
+    """설치된 crontab 라인들. 읽을 수 없으면 (None, 사유)."""
+    try:
+        proc = subprocess.run(["crontab", "-l"], stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True)
+    except FileNotFoundError:
+        return None, "crontab 명령이 없습니다 (Windows 이거나 cron 미설치)"
+    if proc.returncode != 0:
+        err = (proc.stderr or "").strip()
+        if "no crontab" in err.lower():
+            return [], "설치된 crontab 이 없습니다"
+        return None, f"crontab -l 실패: {err or proc.returncode}"
+    return [ln for ln in proc.stdout.splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")], ""
+
+
+def _job_status(runs_dir: str, job: str) -> Optional[dict]:
+    path = os.path.join(runs_dir, "status", f"{job}.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (ValueError, OSError):
+        return None
+
+
+def evaluate_schedule(expected: Dict[str, str], lines: Sequence[str],
+                      runs_dir: str, max_age_days: int,
+                      now=None) -> "tuple[list, int, int]":
+    """설치된 crontab 라인들을 기대값과 대조한다.
+
+    순수 함수로 떼어 둔 이유: crontab 명령이 없는 환경에서도 이 판정 자체는
+    시험할 수 있어야 한다. I/O 와 섞어 두면 정작 판정 로직이 검증되지 않는다.
+
+    반환: (사람이 읽을 줄들, 문제 수, 경고 수). 문제가 1건이라도 있으면 FAIL.
+    """
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    now = now or _dt.now(_tz.utc)
+    out: List[str] = []
+    problems = warnings = 0
+
+    for name, want_expr in expected.items():
+        # 명령 문자열은 사용자가 래퍼로 바꿔 쓰므로 잡 이름 포함 여부로 찾는다.
+        matches = [ln for ln in lines if name in ln]
+        if not matches:
+            out.append(f"  [FAIL] {name:<16} crontab 에 없습니다")
+            problems += 1
+            continue
+        got_expr = " ".join(matches[0].split()[:5])
+        if got_expr != want_expr:
+            out.append(f"  [FAIL] {name:<16} 시각이 다릅니다: "
+                       f"설치={got_expr!r} 기대={want_expr!r}")
+            problems += 1
+            continue
+
+        st = _job_status(runs_dir, name)
+        if st is None:
+            out.append(f"  [WARN] {name:<16} 등록됨 · 아직 한 번도 안 돌았습니다")
+            warnings += 1
+            continue
+        code = st.get("exit_code")
+        finished = st.get("finished_at") or ""
+        try:
+            when = _dt.fromisoformat(finished)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=_tz.utc)
+            age = now - when
+        except ValueError:
+            age = None
+        if code != 0:
+            out.append(f"  [FAIL] {name:<16} 마지막 실행이 실패했습니다 "
+                       f"(code={code}, {finished}) → {st.get('log')}")
+            problems += 1
+        elif age is not None and age > _td(days=max_age_days):
+            out.append(f"  [FAIL] {name:<16} {age.days}일째 안 돌았습니다 "
+                       f"(마지막 {finished})")
+            problems += 1
+        else:
+            out.append(f"  [OK]   {name:<16} {finished}")
+
+    # 프로파일에 없는데 남아 있는 우리 잡. 예: daytrade 로 깔았다가 paper 로
+    # 바꿨는데 eod-flat 라인이 그대로 남은 경우 — 옛 잡이 계속 돌면서 같은
+    # 계좌 파일을 건드린다.
+    #
+    # 문자열 "autotrader" 로 찾으면 안 된다. 사용자는 래퍼로 감싸 쓰므로
+    # 그 문자열이 명령에 없을 수 있다(경로에 우연히 들어 있을 뿐이다).
+    # 알려진 잡 이름으로 판단해야 경로와 무관하게 정확하다.
+    from .jobs import JOBS as _ALL_JOBS
+    leftovers = set(_ALL_JOBS) - set(expected)
+    for ln in lines:
+        if any(n in ln for n in expected):
+            continue
+        for name in sorted(leftovers):
+            if name in ln:
+                out.append(f"  [WARN] 프로파일에 없는 잡이 남아 있습니다: {ln.strip()}")
+                warnings += 1
+                break
+    return out, problems, warnings
+
+
+def cmd_schedule_check(args) -> int:
+    """크론잡이 실제로 등록됐고 실제로 돌고 있는지 확인한다.
+
+    등록했다고 **보고하는 것**과 등록된 것은 다르다. 그리고 등록되어 있어도
+    자격증명이 없거나 경로가 틀리면 매일 조용히 실패한다 — 크론은 아무 말도
+    하지 않는다. 60거래일을 쌓으려면 이 둘을 주기적으로 확인해야 한다.
+
+    종료코드 0 = 통과, 1 = 문제 발견.
+    """
+    reg = build_schedule(args.profile)
+    expected = {job.name: job.to_crontab_expression() for job in reg.jobs()}
+
+    print(f"== 크론잡 점검 (profile={args.profile}, runs={args.runs}) ==")
+    if args.crontab_file:
+        with open(args.crontab_file, encoding="utf-8") as fh:
+            lines = [ln for ln in fh.read().splitlines()
+                     if ln.strip() and not ln.lstrip().startswith("#")]
+        why = f"파일에서 읽음: {args.crontab_file}"
+        print(f"  [주의] {why} (설치된 crontab 이 아닙니다)")
+    else:
+        lines, why = _installed_crontab()
+        if lines is None:
+            print(f"  [SKIP] {why}")
+            print("  등록 검증을 할 수 없습니다. 리눅스 머신에서 실행하거나 "
+                  "--crontab-file 로 파일을 지정하세요.")
+            return 1
+        if why:
+            print(f"  [주의] {why}")
+
+    out, problems, warnings = evaluate_schedule(
+        expected, lines, args.runs, args.max_age_days)
+    for line in out:
+        print(line)
+    print(f"  판정: {'PASS' if problems == 0 else 'FAIL'} "
+          f"(문제 {problems}건, 경고 {warnings}건)")
+    return 0 if problems == 0 else 1
+
+
 def cmd_schedule(args) -> int:
     """표준 크론잡을 crontab 형식으로 출력.
 
     요일 필드는 표준 cron 규약(0=일)으로 변환되어 나간다. 이 저장소 내부는
     Python 규약(0=월)이라 변환 없이 심으면 금요일이 빠진다.
     """
+    if args.check:
+        return cmd_schedule_check(args)
     reg = build_schedule(args.profile)
     print(f"# autotrader 표준 크론잡 — profile={args.profile}")
     if args.profile == "daytrade":
@@ -893,6 +1041,16 @@ def main(argv: Optional[list] = None) -> int:
                        help="paper=60거래일 모의투자(기본) · daytrade=매일 전량청산(비권장)")
     p_sch.add_argument("--prefix", default="python -m autotrader run-job ",
                        help="crontab 명령 프리픽스")
+    p_sch.add_argument("--check", action="store_true",
+                       help="설치된 crontab 과 최근 실행 상태를 점검한다. "
+                            "문제가 있으면 종료코드 1")
+    p_sch.add_argument("--runs", default="./runs",
+                       help="--check 가 읽을 세션 산출물 디렉터리")
+    p_sch.add_argument("--crontab-file",
+                       help="설치된 crontab 대신 이 파일을 점검한다 "
+                            "(설치 전 dry-run, 그리고 cron 없는 환경)")
+    p_sch.add_argument("--max-age-days", type=int, default=STALE_AFTER_DAYS,
+                       help=f"이 기간 안에 안 돌았으면 FAIL (기본 {STALE_AFTER_DAYS}일)")
     p_sch.set_defaults(func=cmd_schedule)
 
     p_ft = sub.add_parser("fetch", help="키움 REST API 로 시세 자동 수집 (KiwoomProvider)")
