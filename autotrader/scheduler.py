@@ -56,6 +56,17 @@ def _parse_field(expr: str, lo: int, hi: int) -> List[int]:
     return sorted(out)
 
 
+# ------------------------------------------------- 요일 규약 변환
+# 이 모듈 내부는 Python 규약(`datetime.weekday()`: 0=월 … 6=일)을 쓴다.
+# 표준 cron 데몬(crontab(5))은 0=일 이다. 한 칸이 어긋나므로, 외부로
+# 내보낼 때 반드시 변환해야 한다. 변환을 빼먹으면 "0-4"(월~금)가 cron 에서
+# 일~목으로 읽혀 **금요일이 조용히 빠진다.**
+def _to_cron_weekday_field(weekdays: Sequence[int]) -> str:
+    if len(set(weekdays)) >= 7:
+        return "*"          # 매일이면 풀어 쓰지 않는다 — 사람이 읽는 파일이다
+    return ",".join(str(d) for d in sorted({(wd + 1) % 7 for wd in weekdays}))
+
+
 @dataclass
 class CronExpr:
     minutes: List[int]
@@ -78,6 +89,16 @@ class CronExpr:
         return (ts.minute in self.minutes and ts.hour in self.hours
                 and ts.day in self.days and ts.month in self.months
                 and ts.weekday() in self.weekdays)
+
+    def to_crontab_expression(self) -> str:
+        """표준 cron 데몬이 이해하는 표현식. 요일 필드만 규약 변환한다.
+
+        나머지 필드는 원문 그대로 둔다 — `*/5` 를 `0,5,10,...` 으로 풀어
+        버리면 사람이 crontab 을 읽고 검토할 수 없게 된다.
+        """
+        fields = self.source.split()
+        fields[4] = _to_cron_weekday_field(self.weekdays)
+        return " ".join(fields)
 
     def next_after(self, after: datetime) -> datetime:
         """분 단위로 앞으로 최대 1년 안에서 다음 실행 시각을 찾는다."""
@@ -104,6 +125,9 @@ class Job:
 
     def next_after(self, after: datetime) -> datetime:
         return self._expr.next_after(after)
+
+    def to_crontab_expression(self) -> str:
+        return self._expr.to_crontab_expression()
 
 
 class JobRegistry:
@@ -139,7 +163,7 @@ class JobRegistry:
         for job in self._jobs.values():
             cmd = f"{prefix_command}{job.name}".strip()
             desc = f"  # {job.description}" if job.description else ""
-            lines.append(f"{job.expression} {cmd}{desc}")
+            lines.append(f"{job.to_crontab_expression()} {cmd}{desc}")
         return lines
 
     def run_forever(self, tick_seconds: float = 1.0,

@@ -11,8 +11,9 @@ import argparse
 import json
 import logging
 import os
+import subprocess
 import sys
-from typing import Optional
+from typing import Dict, List, Optional, Sequence
 
 from .backtest import Backtester
 from .broker import PaperBroker
@@ -166,12 +167,13 @@ def cmd_paper(args) -> int:
                         ensemble_min_votes=args.votes,
                         trail_pct=args.trail, dry_run=args.dry_run,
                         registry=reg, validated_only=args.validated_only,
-                        order_log=args.order_log, state_path=args.state)
+                        order_log=args.order_log, state_path=args.state,
+                        account_path=args.account)
     trader.allow_pre_market = args.allow_pre_market
     trader.allow_after_market = args.allow_after_market
     # 재시작 복구. 건너뛰면 이미 들고 있는 종목에 또 들어가고, 일일 진입
     # 상한이 0 부터 다시 세어지고, 손절선을 몰라 스탑이 안 걸린다.
-    if args.state:
+    if args.state or args.account:
         for note in trader.recover():
             print(f"  {note}")
     if reg is not None:
@@ -467,14 +469,23 @@ def cmd_lowturnover(args) -> int:
 
 
 def cmd_run_job(args) -> int:
-    """v0.8 스케줄러가 crontab 에서 호출할 표준 잡 실행."""
-    from .jobs import JobContext, run
-    ctx = JobContext(cache_dir=args.cache, registry_path=args.registry)
+    """크론이 호출하는 표준 잡 실행.
+
+    종료코드 0 = 성공, 1 = 잡 실패, 2 = 알 수 없는 잡.
+    크론은 종료코드만 본다. 실패를 0 으로 끝내면 아무도 모른 채 다음 잡이
+    이어지고, 특히 무결성 게이트가 그렇게 되면 깨진 데이터가 그대로 흘러간다.
+    """
+    from .jobs import JobContext, JobFailed, run
+    ctx = JobContext(cache_dir=args.cache, registry_path=args.registry,
+                     runs_dir=args.runs)
     try:
         msg = run(args.name, ctx)
     except KeyError as exc:
         print(f"[ERROR] {exc}")
         return 2
+    except JobFailed as exc:
+        print(f"[FAIL] {exc}")
+        return 1
     print(msg)
     return 0
 
@@ -643,22 +654,237 @@ def cmd_edge(args) -> int:
     return 0
 
 
-def cmd_schedule(args) -> int:
-    """실전 자동매매 표준 크론잡 세트를 crontab 형식으로 출력.
-    이 라인들을 `crontab -e` 로 등록하거나 systemd timer 로 변환해 쓴다."""
+# 표준 스케줄 프로파일. 표현식은 이 저장소 내부 규약(0=월 … 6=일)으로 쓴다 —
+# crontab 으로 내보낼 때 scheduler 가 cron 규약(0=일)으로 변환한다.
+SCHEDULE_PROFILES = {
+    # 기본. 1단계 — 전략 없이 새 데이터부터 쌓는다.
+    #
+    # 지금 레지스트리에 승인된 전략이 하나도 없다(전부 폐기했다). 그래서
+    # paper 프로파일은 매일 실패로 끝난다. 그것이 옳은 동작이지만, 그 상태로
+    # 크론을 걸어 둘 이유는 없다.
+    #
+    # 이 세트는 전략과 무관하게 가치가 있다:
+    #   · 시험할 전략이 정해지기 전에 새 구간 데이터가 쌓이기 시작한다
+    #   · 크론·자격증명·경로가 실제로 도는지 먼저 드러난다
+    #
+    # 전략이 정해지면 --profile paper 로 바꿔 단다.
+    "collect": [
+        ("collect-daily", "45 15 * * 0-4", "15:45 장 마감 후 일봉 수집"),
+        ("validate-data", "0 16 * * 0-4", "16:00 데이터 무결성 게이트 (실패 시 exit 1)"),
+        ("data-progress", "15 16 * * 0-4", "16:15 이 fold 밖의 새 데이터가 며칠 쌓였나"),
+    ],
+    # 2단계 — 승인된 전략이 생긴 뒤. "새 데이터로만 다시 시도한다" 를 굴리는 세트.
+    #
+    # 하루의 순서가 승격 경로 그대로다:
+    #   09:05 (D)  전일까지의 봉으로 판단 → 오늘 시가 체결   ← 장중이어야 한다
+    #   15:45 (D)  장 마감 후 일봉 수집
+    #   16:00 (D)  무결성 게이트 — 실패하면 종료코드 1 로 멈춘다
+    #   16:15 (D)  진척 리포트 (60거래일까지 며칠 남았는지)
+    #
+    # paper-session 을 장 마감 후로 옮기면 안 된다. LiveTrader.cycle() 은
+    # 휴장 중이면 즉시 반환하므로, 60일 내내 아무 일도 일어나지 않는다.
+    "paper": [
+        ("paper-session", "5 9 * * 0-4", "09:05 모의매매 세션 (전일 종가 판단 → 당일 시가 체결)"),
+        ("collect-daily", "45 15 * * 0-4", "15:45 장 마감 후 일봉 수집"),
+        ("validate-data", "0 16 * * 0-4", "16:00 데이터 무결성 게이트 (실패 시 exit 1)"),
+        ("session-report", "15 16 * * 0-4", "16:15 60거래일 진척·누적 성과"),
+    ],
+    # 매일 전량청산 데이트레이딩. 남겨는 두지만 기본이 아니다 —
+    # 회전율 연 343배면 왕복비용만 연 57~125% 라 성립하지 않는다.
+    # docs/STRATEGY-RESET-2026-08-26.md 참고.
+    "daytrade": [
+        ("collect-5m", "*/5 9-15 * * 0-4", "평일 장중 5분봉 수집"),
+        ("morning-entry", "30 9 * * 0-4", "09:30 진입 사이클"),
+        ("eod-flat", "0 15 * * 0-4", "15:00 EOD 일괄 청산"),
+        ("collect-daily", "45 15 * * 0-4", "장 마감 후 일봉 수집"),
+        ("post-analysis", "30 15 * * 0-4", "장 마감 후 사후 분석 리포트"),
+    ],
+}
+
+DAYTRADE_WARNING = """
+# ⚠ daytrade 프로파일은 매일 전량청산을 전제한다.
+#   연 회전율 343배 → 왕복비용만 연 57~125% (가격대별).
+#   측정된 우위는 거래당 -27.9bp ~ +8.0bp 였다. 비용을 못 넘는다.
+#   근거: docs/STRATEGY-RESET-2026-08-26.md
+""".strip()
+
+
+def build_schedule(profile: str):
+    """프로파일 이름으로 JobRegistry 를 만든다. 스케줄 검증도 이걸 쓴다 —
+    출력과 검증이 다른 소스를 보면 "등록했는데 안 맞는" 상태를 못 잡는다."""
     from .scheduler import JobRegistry
+    if profile not in SCHEDULE_PROFILES:
+        raise SystemExit(f"알 수 없는 프로파일: {profile} "
+                         f"(가능: {', '.join(SCHEDULE_PROFILES)})")
     reg = JobRegistry()
-    reg.register("collect-5m", "*/5 9-15 * * 0-4", lambda t: None,
-                 description="평일 장중 5분봉 수집")
-    reg.register("collect-daily", "45 15 * * 0-4", lambda t: None,
-                 description="장 마감 후 일봉 수집")
-    reg.register("morning-entry", "30 9 * * 0-4", lambda t: None,
-                 description="09:30 진입 사이클")
-    reg.register("eod-flat", "0 15 * * 0-4", lambda t: None,
-                 description="15:00 EOD 일괄 청산")
-    reg.register("post-analysis", "30 15 * * 0-4", lambda t: None,
-                 description="장 마감 후 사후 분석 리포트")
-    print("# autotrader 표준 자동매매 크론잡 (crontab -e 에 붙여 넣기)")
+    for name, expr, desc in SCHEDULE_PROFILES[profile]:
+        reg.register(name, expr, lambda t: None, description=desc)
+    return reg
+
+
+#: 하루 한 번 도는 잡이 이 기간 안에 한 번도 안 돌았으면 뭔가 잘못된 것.
+#: 주말 + 연휴를 감안한 값이다.
+STALE_AFTER_DAYS = 4
+
+
+def _installed_crontab() -> "tuple[Optional[list], str]":
+    """설치된 crontab 라인들. 읽을 수 없으면 (None, 사유)."""
+    try:
+        proc = subprocess.run(["crontab", "-l"], stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True)
+    except FileNotFoundError:
+        return None, "crontab 명령이 없습니다 (Windows 이거나 cron 미설치)"
+    if proc.returncode != 0:
+        err = (proc.stderr or "").strip()
+        if "no crontab" in err.lower():
+            return [], "설치된 crontab 이 없습니다"
+        return None, f"crontab -l 실패: {err or proc.returncode}"
+    return [ln for ln in proc.stdout.splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")], ""
+
+
+def _job_status(runs_dir: str, job: str) -> Optional[dict]:
+    path = os.path.join(runs_dir, "status", f"{job}.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (ValueError, OSError):
+        return None
+
+
+def evaluate_schedule(expected: Dict[str, str], lines: Sequence[str],
+                      runs_dir: str, max_age_days: int,
+                      now=None) -> "tuple[list, int, int]":
+    """설치된 crontab 라인들을 기대값과 대조한다.
+
+    순수 함수로 떼어 둔 이유: crontab 명령이 없는 환경에서도 이 판정 자체는
+    시험할 수 있어야 한다. I/O 와 섞어 두면 정작 판정 로직이 검증되지 않는다.
+
+    반환: (사람이 읽을 줄들, 문제 수, 경고 수). 문제가 1건이라도 있으면 FAIL.
+    """
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    now = now or _dt.now(_tz.utc)
+    out: List[str] = []
+    problems = warnings = 0
+
+    for name, want_expr in expected.items():
+        # 명령 문자열은 사용자가 래퍼로 바꿔 쓰므로 잡 이름 포함 여부로 찾는다.
+        matches = [ln for ln in lines if name in ln]
+        if not matches:
+            out.append(f"  [FAIL] {name:<16} crontab 에 없습니다")
+            problems += 1
+            continue
+        got_expr = " ".join(matches[0].split()[:5])
+        if got_expr != want_expr:
+            out.append(f"  [FAIL] {name:<16} 시각이 다릅니다: "
+                       f"설치={got_expr!r} 기대={want_expr!r}")
+            problems += 1
+            continue
+
+        st = _job_status(runs_dir, name)
+        if st is None:
+            out.append(f"  [WARN] {name:<16} 등록됨 · 아직 한 번도 안 돌았습니다")
+            warnings += 1
+            continue
+        code = st.get("exit_code")
+        finished = st.get("finished_at") or ""
+        try:
+            when = _dt.fromisoformat(finished)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=_tz.utc)
+            age = now - when
+        except ValueError:
+            age = None
+        if code != 0:
+            out.append(f"  [FAIL] {name:<16} 마지막 실행이 실패했습니다 "
+                       f"(code={code}, {finished}) → {st.get('log')}")
+            problems += 1
+        elif age is not None and age > _td(days=max_age_days):
+            out.append(f"  [FAIL] {name:<16} {age.days}일째 안 돌았습니다 "
+                       f"(마지막 {finished})")
+            problems += 1
+        else:
+            out.append(f"  [OK]   {name:<16} {finished}")
+
+    # 프로파일에 없는데 남아 있는 우리 잡. 예: daytrade 로 깔았다가 paper 로
+    # 바꿨는데 eod-flat 라인이 그대로 남은 경우 — 옛 잡이 계속 돌면서 같은
+    # 계좌 파일을 건드린다.
+    #
+    # 문자열 "autotrader" 로 찾으면 안 된다. 사용자는 래퍼로 감싸 쓰므로
+    # 그 문자열이 명령에 없을 수 있다(경로에 우연히 들어 있을 뿐이다).
+    # 알려진 잡 이름으로 판단해야 경로와 무관하게 정확하다.
+    from .jobs import JOBS as _ALL_JOBS
+    leftovers = set(_ALL_JOBS) - set(expected)
+    for ln in lines:
+        if any(n in ln for n in expected):
+            continue
+        for name in sorted(leftovers):
+            if name in ln:
+                out.append(f"  [WARN] 프로파일에 없는 잡이 남아 있습니다: {ln.strip()}")
+                warnings += 1
+                break
+    return out, problems, warnings
+
+
+def cmd_schedule_check(args) -> int:
+    """크론잡이 실제로 등록됐고 실제로 돌고 있는지 확인한다.
+
+    등록했다고 **보고하는 것**과 등록된 것은 다르다. 그리고 등록되어 있어도
+    자격증명이 없거나 경로가 틀리면 매일 조용히 실패한다 — 크론은 아무 말도
+    하지 않는다. 60거래일을 쌓으려면 이 둘을 주기적으로 확인해야 한다.
+
+    종료코드 0 = 통과, 1 = 문제 발견.
+    """
+    reg = build_schedule(args.profile)
+    expected = {job.name: job.to_crontab_expression() for job in reg.jobs()}
+
+    print(f"== 크론잡 점검 (profile={args.profile}, runs={args.runs}) ==")
+    if args.crontab_file:
+        with open(args.crontab_file, encoding="utf-8") as fh:
+            lines = [ln for ln in fh.read().splitlines()
+                     if ln.strip() and not ln.lstrip().startswith("#")]
+        why = f"파일에서 읽음: {args.crontab_file}"
+        print(f"  [주의] {why} (설치된 crontab 이 아닙니다)")
+    else:
+        lines, why = _installed_crontab()
+        if lines is None:
+            print(f"  [SKIP] {why}")
+            print("  등록 검증을 할 수 없습니다. 리눅스 머신에서 실행하거나 "
+                  "--crontab-file 로 파일을 지정하세요.")
+            return 1
+        if why:
+            print(f"  [주의] {why}")
+
+    out, problems, warnings = evaluate_schedule(
+        expected, lines, args.runs, args.max_age_days)
+    for line in out:
+        print(line)
+    print(f"  판정: {'PASS' if problems == 0 else 'FAIL'} "
+          f"(문제 {problems}건, 경고 {warnings}건)")
+    return 0 if problems == 0 else 1
+
+
+def cmd_schedule(args) -> int:
+    """표준 크론잡을 crontab 형식으로 출력.
+
+    요일 필드는 표준 cron 규약(0=일)으로 변환되어 나간다. 이 저장소 내부는
+    Python 규약(0=월)이라 변환 없이 심으면 금요일이 빠진다.
+    """
+    if args.check:
+        return cmd_schedule_check(args)
+    reg = build_schedule(args.profile)
+    print(f"# autotrader 표준 크론잡 — profile={args.profile}")
+    if args.profile == "daytrade":
+        print(DAYTRADE_WARNING)
+    if args.profile == "collect":
+        print("# 1단계: 전략 없이 새 데이터부터 쌓는다. 승인된 전략이 생기면")
+        print("#        --profile paper 로 바꿔 모의매매를 추가한다.")
+    print(f"# 설치: autotrader schedule --profile {args.profile} "
+          f"--prefix '<래퍼 경로> ' | crontab -")
+    print("# 확인: autotrader schedule --check   (등록됐다고 믿지 말고 확인한다)")
     for line in reg.crontab_lines(prefix_command=args.prefix):
         print(line)
     return 0
@@ -763,6 +989,11 @@ def main(argv: Optional[list] = None) -> int:
                            "손절선·일일카운터·쿨다운·EOD 수행여부가 재시작을 건넌다")
     p_pp.add_argument("--order-log", default=None,
                       help="미결 주문 장부 JSONL (예: runs/orders.jsonl)")
+    p_pp.add_argument("--account", default=None,
+                      help="페이퍼 계좌 파일 (예: runs/account.json). 지정하면 "
+                           "현금·보유종목·청산기록이 프로세스를 건넌다. 크론으로 "
+                           "여러 날에 걸쳐 모의투자를 누적하려면 반드시 필요하다 "
+                           "— 없으면 매 실행이 initial_cash 로 되돌아간다")
     p_pp.add_argument("--allow-pre-market", action="store_true", default=False,
                       help="NXT 프리마켓(08:00~08:59) 참여")
     p_pp.add_argument("--allow-after-market", action="store_true", default=False,
@@ -823,9 +1054,24 @@ def main(argv: Optional[list] = None) -> int:
     p_rec.add_argument("--secondary", required=True, help="부 데이터 CSV 디렉터리 (예: KRX+NXT 통합)")
     p_rec.set_defaults(func=cmd_reconcile)
 
-    p_sch = sub.add_parser("schedule", help="표준 자동매매 크론잡을 crontab 라인으로 출력")
+    p_sch = sub.add_parser("schedule", help="표준 크론잡을 crontab 라인으로 출력")
+    p_sch.add_argument("--profile", default="collect",
+                       choices=sorted(SCHEDULE_PROFILES),
+                       help="collect=새 데이터 수집만(기본, 전략 불필요) · "
+                            "paper=60거래일 모의투자(승인된 전략 필요) · "
+                            "daytrade=매일 전량청산(비권장)")
     p_sch.add_argument("--prefix", default="python -m autotrader run-job ",
                        help="crontab 명령 프리픽스")
+    p_sch.add_argument("--check", action="store_true",
+                       help="설치된 crontab 과 최근 실행 상태를 점검한다. "
+                            "문제가 있으면 종료코드 1")
+    p_sch.add_argument("--runs", default="./runs",
+                       help="--check 가 읽을 세션 산출물 디렉터리")
+    p_sch.add_argument("--crontab-file",
+                       help="설치된 crontab 대신 이 파일을 점검한다 "
+                            "(설치 전 dry-run, 그리고 cron 없는 환경)")
+    p_sch.add_argument("--max-age-days", type=int, default=STALE_AFTER_DAYS,
+                       help=f"이 기간 안에 안 돌았으면 FAIL (기본 {STALE_AFTER_DAYS}일)")
     p_sch.set_defaults(func=cmd_schedule)
 
     p_ft = sub.add_parser("fetch", help="키움 REST API 로 시세 자동 수집 (KiwoomProvider)")
@@ -893,13 +1139,15 @@ def main(argv: Optional[list] = None) -> int:
     p_lt.set_defaults(func=cmd_lowturnover)
 
     p_rj = sub.add_parser("run-job", help="스케줄러가 크론에서 호출하는 표준 잡 실행")
-    p_rj.add_argument("name", choices=["morning-entry", "eod-flat",
-                                        "collect-daily", "collect-5m",
-                                        "post-analysis"],
-                      help="실행할 잡 이름")
+    # 목록을 여기 다시 적지 않는다. 두 곳에 적으면 잡을 추가할 때 한쪽만
+    # 고쳐서, 크론에는 있는데 CLI 가 거부하는 상태가 조용히 생긴다.
+    from .jobs import JOBS as _JOBS
+    p_rj.add_argument("name", choices=sorted(_JOBS), help="실행할 잡 이름")
     p_rj.add_argument("--cache", default="./data/kiwoom",
                       help="데이터 캐시 디렉터리")
     p_rj.add_argument("--registry", help="StrategyRegistry JSON 경로")
+    p_rj.add_argument("--runs", default="./runs",
+                      help="세션 산출물 디렉터리 (계좌·상태·주문장부·세션일지)")
     p_rj.set_defaults(func=cmd_run_job)
 
     args = parser.parse_args(argv)

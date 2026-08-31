@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Sequence
 
 from .broker.base import Broker
+from .broker import paper_state
 from .broker.paper import PaperBroker
 from . import indicators as ind
 from .config import Config
@@ -68,7 +69,8 @@ class LiveTrader:
                  registry: Optional[StrategyRegistry] = None,
                  validated_only: bool = False,
                  order_log: Optional[str] = None,
-                 state_path: Optional[str] = None):
+                 state_path: Optional[str] = None,
+                 account_path: Optional[str] = None):
         self.provider = provider
         self.broker = broker
         self.config = config
@@ -109,6 +111,10 @@ class LiveTrader:
         self.ensemble_name = "+".join(sorted(s_.name for s_ in self.strategies))
         # 재시작을 건너뛰어야 하는 값들. 브로커에 물어볼 수 없는 것만 담는다.
         self.state_path = state_path
+        # 페이퍼 계좌 파일. PaperBroker 는 브로커가 우리 프로세스 안에 있어서
+        # 물어볼 외부 진실이 없다 — 이 파일이 곧 잔고다. 실브로커에는 쓰지
+        # 않는다(두 진실이 생긴다). broker/paper_state.py 주석 참고.
+        self.account_path = account_path
 
     # ---- 재시작 복구 ---------------------------------------------------
 
@@ -128,6 +134,16 @@ class LiveTrader:
         now = now or now_kst()
         notes: List[str] = []
         state = SessionState.load(self.state_path) if self.state_path else SessionState()
+
+        # 페이퍼 계좌를 **먼저** 되살린다. 이 순서가 중요하다: 계좌가 복원되면
+        # 아래 reconcile 이 보는 브로커 잔고가 실제 잔고가 되어, 손절선 등이
+        # 그 위에 정상적으로 덮인다. 순서를 뒤집으면 reconcile 이 빈 브로커를
+        # 보고 모든 포지션을 "정리된 것" 으로 버린다.
+        if self.account_path and isinstance(self.broker, PaperBroker):
+            if paper_state.load(self.broker, self.account_path):
+                line = paper_state.summary(self.account_path)
+                if line:
+                    notes.append(f"[복구] {line}")
 
         try:
             broker_positions = self.broker.positions()
@@ -177,6 +193,9 @@ class LiveTrader:
 
         저장하지 않으면 다음 재시작에서 손절선이 사라진다.
         """
+        # 계좌는 state_path 와 독립이다. --state 없이 --account 만 준 경우에도
+        # 저장되어야 한다.
+        self.save_account()
         if not self.state_path:
             return
         now = now or now_kst()
@@ -199,6 +218,12 @@ class LiveTrader:
                 self._merged_positions(positions)),
         )
         st.save(self.state_path)
+
+    def save_account(self) -> None:
+        """페이퍼 계좌를 파일에 남긴다. 이걸 빼먹으면 다음 프로세스가
+        initial_cash 로 되돌아가 60거래일을 돌려도 매일 1일차가 된다."""
+        if self.account_path and isinstance(self.broker, PaperBroker):
+            paper_state.save(self.broker, self.account_path)
 
     def _merged_positions(self, broker_positions):
         """실브로커 잔고에 우리가 아는 손절선 등을 다시 입힌 것.
